@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copyright 2026 Arm Limited and/or its affiliates.
+# SPDX-License-Identifier: MIT
 #
 # End-to-end bringup script for ExecuTorch on i.MX93 Cortex-M33 + Ethos-U65.
 # Run from the executorch repo root on the dev host.

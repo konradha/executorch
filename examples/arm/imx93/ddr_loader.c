@@ -1,8 +1,5 @@
 /*
- * Copyright 2026 Arm Limited and/or its affiliates.
- *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree.
+ * SPDX-License-Identifier: MIT
  *
  * A55-side helper for loading a PTE model into DDR and signaling the M33
  * via the DTCM mailbox. Run on the i.MX93 Linux side after remoteproc start.

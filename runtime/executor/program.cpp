@@ -10,6 +10,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+
 
 #include <executorch/runtime/core/event_tracer_hooks.h>
 #include <executorch/runtime/executor/memory_manager.h>
@@ -316,15 +318,18 @@ Result<Method> Program::load_method(
           event_tracer, "Program::load_method");
   // If we can't create a MethodMeta for the Method, the Method is corrupt;
   // Method::method_meta() assumes success, so we must fail here.
+  printf("LM:enter\n");
   Result<MethodMeta> meta = method_meta(method_name);
   if (!meta.ok()) {
     return meta.error();
   }
+  printf("LM:meta ok\n");
 
   auto plan = get_execution_plan(internal_program_, method_name);
   if (!plan.ok()) {
     return plan.error();
   }
+  printf("LM:plan ok\n");
   return Method::load(
       plan.get(),
       this,

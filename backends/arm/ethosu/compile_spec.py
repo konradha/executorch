@@ -48,7 +48,7 @@ class EthosUCompileSpec(ArmCompileSpec):
             return resolved_system_config, resolved_memory_mode
         if "ethos-u65" in target_lower:
             resolved_system_config = (
-                "Ethos_U65_SYS_DRAM_Mid" if system_config is None else system_config
+                "Ethos_U65_Mid_End" if system_config is None else system_config
             )
             resolved_memory_mode = "Sram_Only" if memory_mode is None else memory_mode
             return resolved_system_config, resolved_memory_mode
@@ -87,7 +87,7 @@ class EthosUCompileSpec(ArmCompileSpec):
         if "u55" in target_lower:
             base_tosa_version += "+u55"
         if "u65" in target_lower:
-            base_tosa_version += "+u55"
+            pass  # U65 uses full TOSA INT profile, no subset restriction
         if "u85" in target_lower:
             base_tosa_version += "+cf"
         return TosaSpecification.create_from_string(base_tosa_version)

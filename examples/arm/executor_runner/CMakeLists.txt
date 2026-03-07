@@ -98,6 +98,7 @@ set(PYTHON_EXECUTABLE
     "python"
     CACHE PATH "Define to override python executable used"
 )
+set(ETHOSU_LOG_ENABLE OFF CACHE BOOL "Disable Ethos-U driver logs for i.MX93 bringup" FORCE)
 
 # Include corstone help functions
 include(${ET_DIR_PATH}/backends/arm/scripts/corstone_utils.cmake)
@@ -182,24 +183,37 @@ target_sources(
                               arm_memory_allocator.cpp
 )
 
-# Check for "U55" in SYSTEM_CONFIG
+# Check for NPU type in SYSTEM_CONFIG
 string(FIND "${SYSTEM_CONFIG}" "U55" U55_FOUND)
-
-# Check for "U85" in SYSTEM_CONFIG
+string(FIND "${SYSTEM_CONFIG}" "U65" U65_FOUND)
 string(FIND "${SYSTEM_CONFIG}" "U85" U85_FOUND)
 
-# Check if neither "U55" nor "U85" was found
-if(U55_FOUND EQUAL -1 AND U85_FOUND EQUAL -1)
+if(U55_FOUND EQUAL -1 AND U65_FOUND EQUAL -1 AND U85_FOUND EQUAL -1)
   message(
     FATAL_ERROR
-      "SYSTEM_CONFIG does not contain 'U55' or 'U85'. Configuration aborting."
+      "SYSTEM_CONFIG does not contain 'U55', 'U65' or 'U85'. Configuration aborting."
   )
 endif()
 
-# Proceed with specific actions if either is found
 if(NOT U55_FOUND EQUAL -1)
   message(STATUS "SYSTEM_CONFIG contains 'U55'.")
   set(LINK_FILE_IN "${CMAKE_SOURCE_DIR}/Corstone-300.ld")
+endif()
+
+if(NOT U65_FOUND EQUAL -1)
+  message(STATUS "SYSTEM_CONFIG contains 'U65'.")
+  set(LINK_FILE_IN "${CMAKE_SOURCE_DIR}/iMX93.ld")
+  # i.MX93 uses -nostartfiles to avoid CRT conflicts with split PT_LOAD
+  # segments (ITCM for code, DTCM for data). target.cpp provides the
+  # baremetal stubs (__dso_handle, _init, _fini).
+  target_link_options(
+    arm_executor_runner PRIVATE
+    -nostartfiles
+    -Wl,--defsym=_start=main
+    -Wl,--defsym=__STACK_SIZE=0x00010000
+    -Wl,--defsym=__HEAP_SIZE=0x00001000
+    -Wl,--undefined=resources
+  )
 endif()
 
 if(NOT U85_FOUND EQUAL -1)
@@ -213,7 +227,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   set(COMPILER_PREPROCESSOR_OPTIONS -E -x c -P)
 endif()
 
-get_filename_component(LINK_FILE_OUT_BASE ${LINK_FILE} NAME)
+get_filename_component(LINK_FILE_OUT_BASE ${LINK_FILE_IN} NAME)
 set(LINK_FILE_OUT
     ${CMAKE_CURRENT_BINARY_DIR}/${LINK_FILE_OUT_BASE}.${LINK_FILE_EXT}
 )
@@ -226,9 +240,6 @@ target_link_options(arm_executor_runner PRIVATE "-T" "${LINK_FILE_OUT}")
 
 # Apply whole-archive helper where available to keep static initializers.
 executorch_target_link_options_shared_lib(executorch_delegate_ethos_u)
-executorch_target_link_options_shared_lib(quantized_kernels)
-executorch_target_link_options_shared_lib(cortex_m_kernels)
-executorch_target_link_options_shared_lib(portable_kernels)
 
 set(arm_executor_runner_link)
 list(
@@ -237,15 +248,33 @@ list(
   extension_runner_util
   ethosu_target_init
   executorch
-  quantized_ops_lib
-  cortex_m_ops_lib
   executorch_delegate_ethos_u
-  quantized_kernels
-  cortex_m_kernels
-  portable_kernels
   -Xlinker
   -Map=arm_executor_runner.map
 )
+
+# i.MX93: minimal IOQDQ ops compiled directly into the runner to avoid
+# pulling all 15 cortex_m kernels via whole-archive (which overflows ITCM).
+if(SYSTEM_CONFIG MATCHES "Ethos_U65")
+  target_sources(arm_executor_runner PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../imx93/register_ioqdq_ops.cpp
+    ${ET_DIR_PATH}/backends/cortex_m/ops/op_quantize_per_tensor.cpp
+    ${ET_DIR_PATH}/backends/cortex_m/ops/op_dequantize_per_tensor.cpp
+  )
+else()
+  executorch_target_link_options_shared_lib(quantized_kernels)
+  executorch_target_link_options_shared_lib(cortex_m_kernels)
+  executorch_target_link_options_shared_lib(portable_kernels)
+  list(
+    APPEND
+    arm_executor_runner_link
+    quantized_ops_lib
+    cortex_m_ops_lib
+    quantized_kernels
+    cortex_m_kernels
+    portable_kernels
+  )
+endif()
 
 # Figure out which ops to include: For semihosting build, use
 # (user-set)SELECT_OPS_MODEL variable. For normal build, use
@@ -337,8 +366,9 @@ if(ET_BUNDLE_IO)
 endif()
 
 # Need whole-archive to ensure C++ ctor's are called - this may be wasteful for
-# bin size as we link in a number of other symbols
-target_link_libraries(arm_executor_runner PUBLIC ${arm_executor_runner_link})
+# bin size as we link in a number of other symbols.
+# ethosu_target_init repeated at end to resolve diag symbols referenced by executorch_core.
+target_link_libraries(arm_executor_runner PUBLIC ${arm_executor_runner_link} ethosu_target_init)
 
 target_link_options(
   arm_executor_runner PUBLIC LINKER:-Map=arm_executor_runner.map

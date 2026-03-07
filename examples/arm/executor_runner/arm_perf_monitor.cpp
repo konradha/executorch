@@ -85,7 +85,11 @@ void ethosu_inference_begin(struct ethosu_driver* drv, void*) {
 
   // Save Cortex-M cycle clock to calculate total CPU cycles used in
   // ethosu_inference_end()
+#if (__CORTEX_M >= 55)
   ethosu_ArmWhenNPURunCycleCountStart = ARM_PMU_Get_CCNTR();
+#else
+  ethosu_ArmWhenNPURunCycleCountStart = DWT->CYCCNT;
+#endif
 }
 
 // Callback invoked at end of NPU execution
@@ -99,21 +103,33 @@ void ethosu_inference_end(struct ethosu_driver* drv, void*) {
   ETHOSU_PMU_Disable(drv);
   // Add Cortex-M cycle clock used during this NPU execution
   ethosu_ArmWhenNPURunCycleCount +=
+#if (__CORTEX_M >= 55)
       (ARM_PMU_Get_CCNTR() - ethosu_ArmWhenNPURunCycleCountStart);
+#else
+      (DWT->CYCCNT - ethosu_ArmWhenNPURunCycleCountStart);
+#endif
 }
 
 // Callback invoked at start of ArmBackend::execute()
 void EthosUBackend_execute_begin() {
   // Save Cortex-M cycle clock to calculate total CPU cycles used in
   // ArmBackend_execute_end()
+#if (__CORTEX_M >= 55)
   ethosu_ArmBackendExecuteCycleCountStart = ARM_PMU_Get_CCNTR();
+#else
+  ethosu_ArmBackendExecuteCycleCountStart = DWT->CYCCNT;
+#endif
 }
 
 // Callback invoked at end of ArmBackend::execute()
 void EthosUBackend_execute_end() {
   // Add Cortex-M cycle clock used during this ArmBackend::execute()
   ethosu_ArmBackendExecuteCycleCount +=
+#if (__CORTEX_M >= 55)
       (ARM_PMU_Get_CCNTR() - ethosu_ArmBackendExecuteCycleCountStart);
+#else
+      (DWT->CYCCNT - ethosu_ArmBackendExecuteCycleCountStart);
+#endif
 }
 }
 
@@ -126,14 +142,23 @@ void StartMeasurements() {
   for (size_t i = 0; i < ethosu_pmuCountersUsed; i++) {
     ethosu_pmuEventCounts[i] = 0;
   }
+#if (__CORTEX_M >= 55)
   ethosu_ArmCycleCountStart = ARM_PMU_Get_CCNTR();
+#else
+  ethosu_ArmCycleCountStart = DWT->CYCCNT;
+#endif
 }
 
 void StopMeasurements(int num_inferences) {
+#if (__CORTEX_M >= 55)
   ARM_PMU_CNTR_Disable(
       PMU_CNTENCLR_CCNTR_ENABLE_Msk | PMU_CNTENCLR_CNT0_ENABLE_Msk |
       PMU_CNTENCLR_CNT1_ENABLE_Msk);
   uint32_t cycle_count = ARM_PMU_Get_CCNTR() - ethosu_ArmCycleCountStart;
+#else
+  DWT->CTRL &= ~DWT_CTRL_CYCCNTENA_Msk;
+  uint32_t cycle_count = DWT->CYCCNT - ethosu_ArmCycleCountStart;
+#endif
 
   // Number of comand streams handled by the NPU
   ET_LOG(Info, "NPU Inferences : %d", num_inferences);

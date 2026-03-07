@@ -133,6 +133,10 @@ et_build_dir=$(realpath ${et_build_dir})
 if [[ ${system_config} == "" ]]
 then
     system_config="Ethos_U55_High_End_Embedded"
+    if [[ ${target} =~ "ethos-u65" ]]
+    then
+        system_config="Ethos_U65_SYS_DRAM_Mid"
+    fi
     if [[ ${target} =~ "ethos-u85" ]]
     then
         system_config="Ethos_U85_SYS_DRAM_Mid"
@@ -142,6 +146,10 @@ fi
 if [[ ${memory_mode} == "" ]]
 then
     memory_mode="Shared_Sram"
+    if [[ ${target} =~ "ethos-u65" ]]
+    then
+        memory_mode="Sram_Only"
+    fi
     if [[ ${target} =~ "ethos-u85" ]]
     then
         memory_mode="Dedicated_Sram_384KB"
@@ -153,6 +161,8 @@ output_folder=$(realpath ${output_folder})
 
 if [[ ${target} == *"ethos-u55"*  ]]; then
     target_cpu=cortex-m55
+elif [[ ${target} == *"ethos-u65"* ]]; then
+    target_cpu=cortex-m33
 else
     target_cpu=cortex-m85
 fi

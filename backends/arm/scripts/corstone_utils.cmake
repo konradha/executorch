@@ -64,6 +64,11 @@ function(add_corstone_subdirectory SYSTEM_CONFIG ETHOS_SDK_PATH)
     add_subdirectory(
       ${ETHOS_SDK_PATH}/core_platform/targets/corstone-300 target
     )
+  elseif(SYSTEM_CONFIG MATCHES "Ethos_U65")
+    # i.MX93: standalone platform target, not part of core_platform
+    add_subdirectory(
+      ${ET_DIR_PATH}/examples/arm/imx93 target
+    )
   elseif(SYSTEM_CONFIG MATCHES "Ethos_U85")
     add_subdirectory(
       ${ETHOS_SDK_PATH}/core_platform/targets/corstone-320 target
@@ -71,19 +76,22 @@ function(add_corstone_subdirectory SYSTEM_CONFIG ETHOS_SDK_PATH)
   else()
     message(FATAL_ERROR "Unsupported SYSTEM_CONFIG ${SYSTEM_CONFIG}.")
   endif()
-  if(MEMORY_MODE MATCHES "Dedicated_Sram")
-    target_compile_definitions(
-      ethosu_target_common INTERFACE ETHOSU_MODEL=1 ETHOSU_ARENA=1
-    )
-  elseif(MEMORY_MODE MATCHES "Shared_Sram" OR MEMORY_MODE MATCHES "Sram_Only")
-    target_compile_definitions(
-      ethosu_target_common INTERFACE ETHOSU_MODEL=1 ETHOSU_ARENA=0
-    )
-  else()
-    message(
-      FATAL_ERROR
-        "Unsupported MEMORY_MODE ${MEMORY_MODE}. Memory_mode can be Shared_Sram, Sram_Only or Dedicated_Sram(applicable for the Ethos-U85)"
-    )
+  # i.MX93 sets its own ETHOSU_MODEL/ARENA (DDR not loadable by remoteproc)
+  if(NOT SYSTEM_CONFIG MATCHES "Ethos_U65")
+    if(MEMORY_MODE MATCHES "Dedicated_Sram")
+      target_compile_definitions(
+        ethosu_target_common INTERFACE ETHOSU_MODEL=1 ETHOSU_ARENA=1
+      )
+    elseif(MEMORY_MODE MATCHES "Shared_Sram" OR MEMORY_MODE MATCHES "Sram_Only")
+      target_compile_definitions(
+        ethosu_target_common INTERFACE ETHOSU_MODEL=1 ETHOSU_ARENA=0
+      )
+    else()
+      message(
+        FATAL_ERROR
+          "Unsupported MEMORY_MODE ${MEMORY_MODE}. Memory_mode can be Shared_Sram, Sram_Only or Dedicated_Sram(applicable for the Ethos-U85)"
+      )
+    endif()
   endif()
 endfunction()
 
@@ -402,6 +410,12 @@ function(configure_timing_adapters SYSTEM_CONFIG MEMORY_MODE)
                   ETHOSU_TA_HISTCNT_1=0
       )
     endif()
+  elseif(SYSTEM_CONFIG MATCHES "Ethos_U65")
+    # i.MX93: real silicon, no timing adapters needed.
+    set(TARGET_BOARD
+        "imx93"
+        PARENT_SCOPE
+    )
   else()
     message(FATAL_ERROR "Unsupported SYSTEM_CONFIG: ${SYSTEM_CONFIG}")
   endif()

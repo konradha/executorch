@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 
+
 #include <executorch/runtime/backend/interface.h>
 #include <executorch/runtime/core/event_tracer_hooks.h>
 #include <executorch/runtime/core/exec_aten/util/tensor_util.h>
@@ -36,6 +37,13 @@ namespace executorch {
 namespace ET_RUNTIME_NAMESPACE {
 
 using internal::PlatformMemoryAllocator;
+
+extern "C" {
+__attribute__((weak)) void executorch_diag_mark(uint32_t slot, uintptr_t value);
+__attribute__((weak)) uintptr_t executorch_diag_read_sp();
+}
+
+constexpr size_t kDebugInstructionLimit = static_cast<size_t>(-1);
 
 /**
  * Runtime state for a backend delegate.
@@ -226,6 +234,19 @@ struct Chain {
 };
 
 namespace {
+
+inline void maybe_diag_mark(uint32_t slot, uintptr_t value) {
+  if (executorch_diag_mark != nullptr) {
+    executorch_diag_mark(slot, value);
+  }
+}
+
+inline uintptr_t maybe_diag_read_sp() {
+  if (executorch_diag_read_sp != nullptr) {
+    return executorch_diag_read_sp();
+  }
+  return 0;
+}
 
 Result<InstructionArgs> gen_instruction_arguments(
     MemoryAllocator* method_allocator,
@@ -820,7 +841,7 @@ Result<Method> Method::load(
     temp_allocator = platform_allocator;
   }
   Method method(program, memory_manager, event_tracer, temp_allocator);
-  ET_LOG(Debug, "Loading method: %s.", s_plan->name()->c_str());
+
   Error err = method.init(s_plan, external_data_map, backend_options);
   if (err != Error::Ok) {
     return err;
@@ -854,7 +875,6 @@ Error Method::init(
       return err;
     }
   }
-
   {
     // Resolve delegates
     const auto delegates = serialization_plan_->delegates();
@@ -933,9 +953,11 @@ Error Method::init(
   {
     // Load chains
     const auto chains = serialization_plan_->chains();
+
     ET_CHECK_OR_RETURN_ERROR(
         chains != nullptr && chains->size() > 0, InvalidProgram, "No chains");
     n_chains_ = chains->size();
+
     chains_ = method_allocator->allocateList<Chain>(n_chains_);
     if (chains_ == nullptr) {
       return Error::MemoryAllocationFailed;
@@ -948,6 +970,7 @@ Error Method::init(
     for (size_t i = 0; i < n_chains_; ++i) {
       auto s_chain = chains->Get(i);
       auto s_instructions = s_chain->instructions();
+
       ET_CHECK_OR_RETURN_ERROR(
           s_instructions != nullptr,
           InvalidProgram,
@@ -961,6 +984,7 @@ Error Method::init(
       }
       auto chain_instruction_arg_lists =
           method_allocator->allocateList<InstructionArgs>(num_instructions);
+
       if (chain_instruction_arg_lists == nullptr) {
         return Error::MemoryAllocationFailed;
       }
@@ -978,7 +1002,8 @@ Error Method::init(
             instr_idx);
 
         const void* instr_args = instruction->instr_args();
-        switch (instruction->instr_args_type()) {
+        auto itype = instruction->instr_args_type();
+        switch (itype) {
           case executorch_flatbuffer::InstructionArguments::KernelCall: {
             const auto* instr_args_as_KernelCall =
                 static_cast<const executorch_flatbuffer::KernelCall*>(
@@ -1355,6 +1380,11 @@ Error Method::execute_instruction() {
   auto& chain = chains_[step_state_.chain_idx];
   auto instructions = chain.s_chain_->instructions();
 
+  maybe_diag_mark(1, 0xE1000000u | static_cast<uint32_t>(step_state_.chain_idx));
+  maybe_diag_mark(24, maybe_diag_read_sp());
+  maybe_diag_mark(25, static_cast<uint32_t>(step_state_.chain_idx));
+  maybe_diag_mark(26, static_cast<uint32_t>(step_state_.instr_idx));
+
   ET_CHECK_OR_RETURN_ERROR(
       step_state_.instr_idx < instructions->size(),
       Internal,
@@ -1365,6 +1395,8 @@ Error Method::execute_instruction() {
       (size_t)instructions->size());
 
   auto instruction = instructions->Get(step_state_.instr_idx);
+  maybe_diag_mark(
+      27, static_cast<uint32_t>(instruction->instr_args_type()));
   size_t next_instr_idx = step_state_.instr_idx + 1;
   Error err = Error::Ok;
 
@@ -1376,7 +1408,16 @@ Error Method::execute_instruction() {
       // TODO(T147221312): Also expose tensor resizer via the context.
       KernelRuntimeContext context(event_tracer_, temp_allocator_);
       auto args = chain.argument_lists_[step_state_.instr_idx];
+      maybe_diag_mark(1, 0xE1100000u | static_cast<uint32_t>(step_state_.instr_idx));
+      maybe_diag_mark(
+          31,
+          reinterpret_cast<uintptr_t>(chain.kernels_[step_state_.instr_idx]));
+      maybe_diag_mark(32, reinterpret_cast<uintptr_t>(args.data()));
+      maybe_diag_mark(33, args.size());
+      maybe_diag_mark(24, maybe_diag_read_sp());
       chain.kernels_[step_state_.instr_idx](context, args);
+      maybe_diag_mark(1, 0xE1110000u | static_cast<uint32_t>(step_state_.instr_idx));
+      maybe_diag_mark(24, maybe_diag_read_sp());
       // We reset the temp_allocator after the switch statement
       err = context.failure_state();
       if (err != Error::Ok) {
@@ -1413,6 +1454,15 @@ Error Method::execute_instruction() {
       // checked at init time.
       auto delegate_idx =
           instruction->instr_args_as_DelegateCall()->delegate_index();
+      maybe_diag_mark(1, 0xE1200000u | static_cast<uint32_t>(step_state_.instr_idx));
+      maybe_diag_mark(31, static_cast<uint32_t>(delegate_idx));
+      maybe_diag_mark(
+          32,
+          reinterpret_cast<uintptr_t>(
+              chain.argument_lists_[step_state_.instr_idx].data()));
+      maybe_diag_mark(
+          33, chain.argument_lists_[step_state_.instr_idx].size());
+      maybe_diag_mark(24, maybe_diag_read_sp());
       ET_CHECK_OR_RETURN_ERROR(
           static_cast<size_t>(delegate_idx) < n_delegate_,
           Internal,
@@ -1428,6 +1478,8 @@ Error Method::execute_instruction() {
       err = delegates_[delegate_idx].Execute(
           backend_execution_context,
           chain.argument_lists_[step_state_.instr_idx]);
+      maybe_diag_mark(1, 0xE1210000u | static_cast<uint32_t>(step_state_.instr_idx));
+      maybe_diag_mark(24, maybe_diag_read_sp());
       if (err != Error::Ok) {
         ET_LOG(
             Error,
@@ -1452,6 +1504,7 @@ Error Method::execute_instruction() {
 #endif
     } break;
     case executorch_flatbuffer::InstructionArguments::JumpFalseCall: {
+      maybe_diag_mark(1, 0xE1300000u | static_cast<uint32_t>(step_state_.instr_idx));
       EXECUTORCH_SCOPE_PROF("JF_CALL");
       internal::EventTracerProfileOpScope event_tracer_op_scope =
           internal::EventTracerProfileOpScope(event_tracer_, "JF_CALL");
@@ -1471,6 +1524,7 @@ Error Method::execute_instruction() {
       }
     } break;
     case executorch_flatbuffer::InstructionArguments::MoveCall: {
+      maybe_diag_mark(1, 0xE1400000u | static_cast<uint32_t>(step_state_.instr_idx));
       EXECUTORCH_SCOPE_PROF("MOVE_CALL");
       internal::EventTracerProfileOpScope event_tracer_op_scope =
           internal::EventTracerProfileOpScope(event_tracer_, "MOVE_CALL");
@@ -1480,6 +1534,7 @@ Error Method::execute_instruction() {
       mutable_value(move_call->move_to()) = get_value(move_call->move_from());
     } break;
     case executorch_flatbuffer::InstructionArguments::FreeCall: {
+      maybe_diag_mark(1, 0xE1500000u | static_cast<uint32_t>(step_state_.instr_idx));
       EXECUTORCH_SCOPE_PROF("FREE_CALL");
       internal::EventTracerProfileOpScope event_tracer_op_scope =
           internal::EventTracerProfileOpScope(event_tracer_, "FREE_CALL");
@@ -1500,6 +1555,7 @@ Error Method::execute_instruction() {
   if (temp_allocator_ != nullptr) {
     temp_allocator_->reset();
   }
+  maybe_diag_mark(23, static_cast<uint32_t>(err));
   if (err == Error::Ok) {
     step_state_.instr_idx = next_instr_idx;
   }
@@ -1603,6 +1659,8 @@ Error Method::execute() {
   ET_CHECK_OR_RETURN_ERROR(
       !in_progress(), InvalidState, "Method execution is in progress");
   const size_t n_input = inputs_size();
+  maybe_diag_mark(1, 0xE0010000u);
+  maybe_diag_mark(24, maybe_diag_read_sp());
   for (size_t i = 0; i < n_input; ++i) {
     ET_CHECK_OR_RETURN_ERROR(
         input_set_[i],
@@ -1610,15 +1668,18 @@ Error Method::execute() {
         "Input %" ET_PRIsize_t " has not been set.",
         i);
   }
-  ET_LOG(Debug, "Executing method: %s.", method_meta().name());
   if (temp_allocator_ != nullptr) {
+    maybe_diag_mark(1, 0xE0020000u);
     temp_allocator_->reset();
+    maybe_diag_mark(1, 0xE0030000u);
+    maybe_diag_mark(24, maybe_diag_read_sp());
   }
 
   // Chains are executed sequentially today, but future async designs may
   // branch and run many in parallel or out of order.
   for (step_state_.chain_idx = 0; step_state_.chain_idx < n_chains_;
        ++step_state_.chain_idx) {
+    maybe_diag_mark(1, 0xE0100000u | static_cast<uint32_t>(step_state_.chain_idx));
     Chain& chain = chains_[step_state_.chain_idx];
     auto instructions = chain.s_chain_->instructions();
     ET_CHECK_OR_RETURN_ERROR(
@@ -1630,6 +1691,10 @@ Error Method::execute() {
     // Loop over instructions
     step_state_.instr_idx = 0;
     while (step_state_.instr_idx < chain.s_chain_->instructions()->size()) {
+      if (step_state_.instr_idx >= kDebugInstructionLimit) {
+        maybe_diag_mark(1, 0xED000000u | static_cast<uint32_t>(step_state_.instr_idx));
+        break;
+      }
       EXECUTORCH_PROFILE_INSTRUCTION_SCOPE(
           static_cast<int32_t>(step_state_.chain_idx),
           static_cast<uint32_t>(step_state_.instr_idx));
@@ -1639,7 +1704,9 @@ Error Method::execute() {
               static_cast<ChainID>(step_state_.chain_idx),
               static_cast<DebugHandle>(step_state_.instr_idx));
       auto status = execute_instruction();
+      maybe_diag_mark(1, 0xE2000000u | static_cast<uint32_t>(status));
       if (status != Error::Ok) {
+        maybe_diag_mark(1, 0xEF000000u | static_cast<uint32_t>(status));
         step_state_ = StepState{0, 0};
         return status;
       }

@@ -46,6 +46,41 @@ namespace executorch {
 namespace backends {
 namespace arm {
 
+extern "C" __attribute__((weak)) void
+executorch_diag_mark(uint32_t slot, uintptr_t value);
+
+namespace {
+
+constexpr uint32_t kDebugDelegateStageLimit = 0xFFFFFFFFu;
+constexpr uint32_t kDebugInputCheckpoint = 0xFFFFFFFFu;
+
+inline void maybe_diag_mark(uint32_t slot, uintptr_t value) {
+  if (executorch_diag_mark != nullptr) {
+    executorch_diag_mark(slot, value);
+  }
+}
+
+inline bool debug_delegate_stage(uint32_t stage) {
+  maybe_diag_mark(1, 0xD1000000u | stage);
+  maybe_diag_mark(40, stage);
+  return stage >= kDebugDelegateStageLimit;
+}
+
+inline bool debug_input_checkpoint(int input_index, uint32_t phase) {
+  const uint32_t checkpoint =
+      static_cast<uint32_t>(input_index) * 8u + phase;
+  maybe_diag_mark(47, 0xABC00000u | checkpoint);
+  maybe_diag_mark(59, kDebugInputCheckpoint);
+  if (checkpoint == kDebugInputCheckpoint) {
+    while (true) {
+      __asm volatile("wfi");
+    }
+  }
+  return false;
+}
+
+} // namespace
+
 extern "C" {
 void __attribute__((weak)) EthosUBackend_execute_begin() {}
 void __attribute__((weak)) EthosUBackend_execute_end() {}
@@ -78,8 +113,6 @@ class EthosUBackend final : public ::executorch::runtime::BackendInterface {
       BackendInitContext& context,
       FreeableBuffer* processed,
       ArrayRef<CompileSpec> compile_specs) const override {
-    ET_LOG(Info, "data:%p", processed->data());
-
     const char* data = static_cast<const char*>(processed->data());
     size_t size = processed->size();
 
@@ -90,16 +123,15 @@ class EthosUBackend final : public ::executorch::runtime::BackendInterface {
     }
 
     MemoryAllocator* allocator = context.get_runtime_allocator();
-    ExecutionHandle* handle = new (std::nothrow) ExecutionHandle();
+    ExecutionHandle* handle = allocator->allocateInstance<ExecutionHandle>();
     if (handle == nullptr) {
+      ET_LOG(Error, "EthosU init: alloc failed");
       return Error::MemoryAllocationFailed;
     }
+    new (handle) ExecutionHandle{};
 
     handle->processed = processed;
     handle->platform_state = platform_init(compile_specs, allocator);
-
-    // Return the same buffer we were passed - this data will be
-    // executed directly
     return handle;
   }
 
@@ -125,6 +157,9 @@ class EthosUBackend final : public ::executorch::runtime::BackendInterface {
     // in scope. e.g. We meassure from now until we exit this metod (in any way
     // we might do it).
     EthosUBackendExecuteCallbacks CollectArm_CPU_Cycles;
+    if (debug_delegate_stage(1)) {
+      return Error::Ok;
+    }
 
     ExecutionHandle* execution_handle =
         static_cast<ExecutionHandle*>(input_handle);
@@ -152,9 +187,17 @@ class EthosUBackend final : public ::executorch::runtime::BackendInterface {
       return Error::InvalidProgram;
     }
     EXECUTORCH_PROF_END(event_tracer, event_tracer_local_scope);
+    maybe_diag_mark(
+        41, reinterpret_cast<uintptr_t>(execution_handle->processed->data()));
+    maybe_diag_mark(42, execution_handle->processed->size());
+    if (debug_delegate_stage(2)) {
+      return Error::Ok;
+    }
 
     const int input_count = handles.inputs ? handles.inputs->count : 0;
     const int output_count = handles.outputs ? handles.outputs->count : 0;
+    maybe_diag_mark(43, static_cast<uintptr_t>(input_count));
+    maybe_diag_mark(44, static_cast<uintptr_t>(output_count));
 
     MemoryAllocator* temp_allocator = context.get_temp_allocator();
     // Use a temporary allocator for the intermediate tensors of the
@@ -169,6 +212,11 @@ class EthosUBackend final : public ::executorch::runtime::BackendInterface {
           "Failed to allocate scratch buffer of %zu bytes from temp_allocator",
           handles.scratch_data_size);
       return Error::MemoryAllocationFailed;
+    }
+    maybe_diag_mark(45, reinterpret_cast<uintptr_t>(ethosu_scratch));
+    maybe_diag_mark(46, handles.scratch_data_size);
+    if (debug_delegate_stage(3)) {
+      return Error::Ok;
     }
     ET_LOG(
         Debug,
@@ -186,9 +234,22 @@ class EthosUBackend final : public ::executorch::runtime::BackendInterface {
     // TODO(MLETORCH-123): Optimise into direct write from Vela into the SRAM
     //                     or DRAM output for compatible data layouts.
     for (int i = 0; i < input_count; i++) {
-      auto tensor_count = 1, io_count = 1;
+      int io_count = 1;
       auto tensor_in = args[i]->toTensor();
       char* scratch_addr = ethosu_scratch + handles.inputs->io[i].offset;
+      maybe_diag_mark(47, static_cast<uintptr_t>(i));
+      maybe_diag_mark(48, 0x10u);
+      maybe_diag_mark(49, static_cast<uintptr_t>(tensor_in.scalar_type()));
+      maybe_diag_mark(50, static_cast<uintptr_t>(handles.inputs->io[i].elem_size));
+      maybe_diag_mark(53, reinterpret_cast<uintptr_t>(tensor_in.const_data_ptr()));
+      maybe_diag_mark(54, tensor_in.nbytes());
+      maybe_diag_mark(55, reinterpret_cast<uintptr_t>(scratch_addr));
+      maybe_diag_mark(56, reinterpret_cast<uintptr_t>(ethosu_scratch));
+      maybe_diag_mark(57, static_cast<uintptr_t>(handles.inputs->io[i].offset));
+      maybe_diag_mark(58, reinterpret_cast<uintptr_t>(args[i]));
+      if (debug_input_checkpoint(i, 1)) {
+        return Error::Ok;
+      }
 
       // We accept:
       bool supported = 0;
@@ -209,13 +270,12 @@ class EthosUBackend final : public ::executorch::runtime::BackendInterface {
           (tensor_in.scalar_type() == ScalarType::Bool and
            handles.inputs->io[i].elem_size == 1);
       if (!supported) {
-        ET_LOG(
-            Error,
-            "Input %d expected Integer (4 byte), Char (1 byte) or Bool (1 byte) integer inputs, got ScalarType id %s size %d",
-            i,
-            executorch::runtime::toString(tensor_in.scalar_type()),
-            handles.inputs->io[i].elem_size);
+        maybe_diag_mark(60, 0xBAD10000u | static_cast<uint32_t>(i));
         return Error::InvalidProgram;
+      }
+      maybe_diag_mark(48, 0x20u);
+      if (debug_input_checkpoint(i, 2)) {
+        return Error::Ok;
       }
 
       // Select a compatible copy routine including checking for input layouts
@@ -230,28 +290,48 @@ class EthosUBackend final : public ::executorch::runtime::BackendInterface {
           (handles.inputs->io[i].elem_size == 1);
 
       if (both_char || both_int || both_short || both_bool) {
-        EXECUTORCH_PROF_SCOPE(
-            event_tracer, "+EthosUBackend::execute()handles.input.memcpy()");
         // Sizes match and elt size matches so memcpy
         memcpy(
             scratch_addr,
             tensor_in.mutable_data_ptr<char>(),
             tensor_in.nbytes());
       } else {
-        ET_LOG(Error, "No matching input copy routine");
+        maybe_diag_mark(60, 0xBAD20000u | static_cast<uint32_t>(i));
         return Error::InvalidProgram;
       }
-      calculate_dimensions(
-          tensor_in, &handles.inputs->io[i], &tensor_count, &io_count);
-      if (tensor_count != io_count) {
-        ET_LOG(Error, "Input tensor sizes do not match");
-        ET_LOG(
-            Error,
-            "Program expects %d elements but got %d",
-            io_count,
-            tensor_count);
+      maybe_diag_mark(48, 0x21u);
+      if (debug_input_checkpoint(i, 3)) {
+        return Error::Ok;
+      }
+      if (debug_input_checkpoint(i, 4)) {
+        return Error::Ok;
+      }
+      if (debug_input_checkpoint(i, 5)) {
+        return Error::Ok;
+      }
+      for (int dim = 0; dim < shapeDim; ++dim) {
+        maybe_diag_mark(61, static_cast<uintptr_t>(dim));
+        maybe_diag_mark(62, static_cast<uintptr_t>(handles.inputs->io[i].shape[dim]));
+        io_count *= handles.inputs->io[i].shape[dim];
+        maybe_diag_mark(63, static_cast<uintptr_t>(io_count));
+      }
+      const size_t io_bytes = static_cast<size_t>(io_count) *
+          static_cast<size_t>(handles.inputs->io[i].elem_size);
+      maybe_diag_mark(48, 0x30u);
+      maybe_diag_mark(51, tensor_in.nbytes());
+      maybe_diag_mark(52, io_bytes);
+      if (debug_input_checkpoint(i, 6)) {
+        return Error::Ok;
+      }
+      if (tensor_in.nbytes() != io_bytes) {
+        maybe_diag_mark(60, 0xBAD30000u | static_cast<uint32_t>(i));
         return Error::InvalidProgram;
       }
+    }
+    maybe_diag_mark(47, 0x44444444u);
+    maybe_diag_mark(48, 0x40u);
+    if (debug_delegate_stage(4)) {
+      return Error::Ok;
     }
 
     EXECUTORCH_PROF_START(
@@ -265,6 +345,7 @@ class EthosUBackend final : public ::executorch::runtime::BackendInterface {
         args,
         ethosu_scratch);
     EXECUTORCH_PROF_END(event_tracer, event_tracer_local_scope);
+    debug_delegate_stage(5);
     return platform_status;
   }
 
@@ -281,7 +362,7 @@ class EthosUBackend final : public ::executorch::runtime::BackendInterface {
       platform_destroy(exec_handle->platform_state);
     }
 
-    delete exec_handle;
+    exec_handle->~ExecutionHandle();
   }
 
  private:

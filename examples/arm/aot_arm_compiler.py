@@ -388,6 +388,8 @@ TARGETS = [
     "ethos-u55-64",
     "ethos-u55-128",
     "ethos-u55-256",
+    "ethos-u65-256",
+    "ethos-u65-512",
     "ethos-u85-128",
     "ethos-u85-256",
     "ethos-u85-512",

@@ -171,6 +171,13 @@ char* model_pte = reinterpret_cast<char*>(ET_MODEL_PTE_ADDR);
 #endif
 #endif
 
+struct DdrPteMailbox {
+  volatile uint32_t magic;
+  volatile uint32_t pte_phys_addr;
+  volatile uint32_t pte_size;
+  volatile uint32_t status;
+};
+
 using executorch::aten::ScalarType;
 using executorch::aten::Tensor;
 using executorch::extension::BufferDataLoader;
@@ -261,6 +268,13 @@ const size_t temp_allocation_pool_size =
 unsigned char __attribute__((
     section(".bss.tensor_arena"),
     aligned(16))) temp_allocation_pool[temp_allocation_pool_size];
+
+// DDR buffer for model PTE data — NPU DMA requires data accessible via
+// the system bus.  M33 DTCM is on a private local bus the NPU can't reach.
+constexpr size_t kDdrPtePoolSize = 8192;
+unsigned char __attribute__((
+    section(".bss.ddr_pte"),
+    aligned(16))) ddr_pte_pool[kDdrPtePoolSize];
 #if defined(ET_ARM_BAREMETAL_FAST_SCRATCH_TEMP_ALLOCATOR_POOL_SIZE)
 extern "C" {
 size_t ethosu_fast_scratch_size =
@@ -272,11 +286,17 @@ unsigned char* ethosu_fast_scratch = dedicated_sram;
 #endif
 
 void et_pal_init(void) {
-  // Enable ARM PMU Clock
+#if (__CORTEX_M >= 55)
   ARM_PMU_Enable();
-  DCB->DEMCR |= DCB_DEMCR_TRCENA_Msk; // Trace enable
+  DCB->DEMCR |= DCB_DEMCR_TRCENA_Msk;
   ARM_PMU_CYCCNT_Reset();
   ARM_PMU_CNTR_Enable(PMU_CNTENSET_CCNTR_ENABLE_Msk);
+#else
+  // M33: no PMU, use DWT cycle counter instead
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT = 0;
+  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+#endif
 }
 
 /**
@@ -296,7 +316,11 @@ ET_NORETURN void et_pal_abort(void) {
 }
 
 et_timestamp_t et_pal_current_ticks(void) {
+#if (__CORTEX_M >= 55)
   return ARM_PMU_Get_CCNTR();
+#else
+  return DWT->CYCCNT;
+#endif
 }
 
 et_tick_ratio_t et_pal_ticks_to_ns_multiplier(void) {
@@ -338,7 +362,80 @@ void* et_pal_allocate(ET_UNUSED size_t size) {
 
 void et_pal_free(ET_UNUSED void* ptr) {}
 
+extern "C" volatile int g_halt;
+extern "C" void halt_point();
+extern "C" void executorch_diag_mark(uint32_t slot, uintptr_t value);
+extern "C" uintptr_t executorch_diag_read_sp();
+
 namespace {
+
+// Diagnostic stage markers — readable from A55 via devmem for headless debug.
+// Slot 0: boot marker (0x45544447 = "ETDG"), slot 1: current stage.
+// All diag infrastructure is compiled unconditionally but is zero-cost
+// on platforms that don't provide executorch_diag_mark (weak symbol in delegate).
+enum DiagSlot : uint32_t {
+  kDiagStage = 1,
+  kDiagRunnerSp = 2,
+  kDiagMethodPtr = 3,
+  kDiagMethodAllocatorUsed = 4,
+  kDiagPlannedCount = 5,
+  kDiagPlanned0Addr = 6,
+  kDiagPlanned0Size = 7,
+  kDiagPlanned1Addr = 8,
+  kDiagPlanned1Size = 9,
+  kDiagInput0Addr = 10,
+  kDiagInput0Size = 11,
+  kDiagInput0Type = 12,
+  kDiagInput1Addr = 13,
+  kDiagInput1Size = 14,
+  kDiagInput1Type = 15,
+  kDiagOutput0Addr = 16,
+  kDiagOutput0Size = 17,
+  kDiagOutput0Type = 18,
+  kDiagTempPoolAddr = 19,
+  kDiagTempPoolSize = 20,
+  kDiagMethodPoolAddr = 21,
+  kDiagMethodPoolSize = 22,
+  kDiagTempAllocatorUsed = 23,
+};
+
+enum DiagStage : uintptr_t {
+  kStageMainStart = 0xA1000001u,
+  kStageRuntimeInitDone = 0xA1000002u,
+  kStageRunnerInitStart = 0xA1000010u,
+  kStageProgramLoaded = 0xA1000011u,
+  kStageMethodMetaReady = 0xA1000012u,
+  kStagePlannedBuffersReady = 0xA1000013u,
+  kStageMemoryManagerReady = 0xA1000014u,
+  kStageMethodLoaded = 0xA1000015u,
+  kStageInputsReady = 0xA1000016u,
+  kStageRunnerInitDone = 0xA1000017u,
+  kStageRunModelStart = 0xA1000020u,
+  kStageExecuteEnter = 0xA1000021u,
+  kStageExecuteReturn = 0xA1000022u,
+  kStageRunModelDone = 0xA1000023u,
+};
+
+inline void diag_mark(DiagSlot slot, uintptr_t value) {
+  executorch_diag_mark(static_cast<uint32_t>(slot), value);
+}
+
+inline void diag_mark_raw(uint32_t slot, uintptr_t value) {
+  executorch_diag_mark(slot, value);
+}
+
+void diag_record_tensor(uint32_t slot, const EValue& value) {
+  if (!value.isTensor()) {
+    diag_mark_raw(slot, 0);
+    diag_mark_raw(slot + 1, 0);
+    diag_mark_raw(slot + 2, static_cast<uintptr_t>(value.tag));
+    return;
+  }
+  auto tensor = value.toTensor();
+  diag_mark_raw(slot, reinterpret_cast<uintptr_t>(tensor.const_data_ptr()));
+  diag_mark_raw(slot + 1, tensor.nbytes());
+  diag_mark_raw(slot + 2, static_cast<uintptr_t>(tensor.scalar_type()));
+}
 
 /// Lightweight heapless container that constructs and stores a T in-place.
 /// Useful when you want to avoid heap allocations but need to delay
@@ -555,7 +652,9 @@ struct RunnerContext {
   Box<Program> program;
   Box<ArmMemoryAllocator> method_allocator;
   Box<ArmMemoryAllocator> temp_allocator;
-  std::vector<Span<uint8_t>> planned_spans;
+  static constexpr size_t kMaxPlannedSpans = 4;
+  std::array<Span<uint8_t>, kMaxPlannedSpans> planned_spans;
+  size_t num_planned_spans = 0;
   Box<HierarchicalAllocator> planned_memory;
   Box<MemoryManager> memory_manager;
   Box<Result<Method>> method;
@@ -571,15 +670,63 @@ struct RunnerContext {
 #endif
 };
 
+void diag_record_method_state(RunnerContext& ctx) {
+  if (!ctx.method->ok()) {
+    return;
+  }
+
+  diag_mark(kDiagMethodPtr, reinterpret_cast<uintptr_t>(ctx.method.value().operator->()));
+  diag_mark(kDiagMethodAllocatorUsed, ctx.method_allocator->used_size());
+  diag_mark(kDiagPlannedCount, ctx.num_planned_spans);
+  if (ctx.num_planned_spans > 0) {
+    diag_mark(kDiagPlanned0Addr, reinterpret_cast<uintptr_t>(ctx.planned_spans[0].data()));
+    diag_mark(kDiagPlanned0Size, ctx.planned_spans[0].size());
+  }
+  if (ctx.num_planned_spans > 1) {
+    diag_mark(kDiagPlanned1Addr, reinterpret_cast<uintptr_t>(ctx.planned_spans[1].data()));
+    diag_mark(kDiagPlanned1Size, ctx.planned_spans[1].size());
+  }
+
+  Method& method = ctx.method.value().get();
+  if (method.inputs_size() > 0) {
+    diag_record_tensor(kDiagInput0Addr, method.get_input(0));
+  }
+  if (method.inputs_size() > 1) {
+    diag_record_tensor(kDiagInput1Addr, method.get_input(1));
+  }
+  if (method.outputs_size() > 0) {
+    diag_record_tensor(kDiagOutput0Addr, method.get_output(0));
+  }
+
+  diag_mark(kDiagTempPoolAddr, reinterpret_cast<uintptr_t>(temp_allocation_pool));
+  diag_mark(kDiagTempPoolSize, temp_allocation_pool_size);
+  diag_mark(kDiagMethodPoolAddr, reinterpret_cast<uintptr_t>(method_allocation_pool));
+  diag_mark(kDiagMethodPoolSize, method_allocation_pool_size);
+  diag_mark(kDiagTempAllocatorUsed, ctx.temp_allocator->used_size());
+}
+
 void runner_init(
     RunnerContext& ctx,
     std::vector<std::pair<char*, size_t>> input_buffers,
-    size_t pte_size) {
-  // Find the offset to the embedded Program.
-  const void* program_data = model_pte;
+    size_t pte_size,
+    const void* pte_ptr = nullptr) {
+  diag_mark(kDiagStage, kStageRunnerInitStart);
+  diag_mark(kDiagRunnerSp, executorch_diag_read_sp());
+
+  const void* src = pte_ptr ? pte_ptr : static_cast<const void*>(model_pte);
+
+  // Copy PTE from DTCM to DDR so the NPU can DMA from it.
+  // Skip copy if PTE is already in DDR (loaded via mailbox from A55).
+  const void* program_data = src;
+  uintptr_t pte_addr = reinterpret_cast<uintptr_t>(src);
+  bool pte_in_ddr = (pte_addr >= 0x40000000);
+  if (!pte_in_ddr && pte_size <= kDdrPtePoolSize) {
+    memcpy(ddr_pte_pool, src, pte_size);
+    program_data = ddr_pte_pool;
+  }
+
   ctx.program_data_len = pte_size;
   ctx.pte_size = pte_size;
-
 #if defined(ET_BUNDLE_IO)
   ctx.bundle_io = executorch::bundled_program::is_bundled_program(
       reinterpret_cast<void*>(model_pte), ctx.pte_size);
@@ -599,33 +746,20 @@ void runner_init(
 #endif
   ctx.loader.reset(program_data, ctx.program_data_len);
   auto& loader = ctx.loader.value();
-  ET_LOG(
-      Info,
-      "PTE Model data loaded. Size: %lu bytes.",
-      static_cast<unsigned long>(ctx.program_data_len));
 
-  // Parse the program file. This is immutable, and can also be reused
-  // between multiple execution invocations across multiple threads.
   Result<Program> program_result = Program::load(&loader);
-  ET_CHECK_MSG(
-      program_result.ok(),
-      "Program loading failed @ %p: 0x%" PRIx32,
-      program_data,
-      program_result.error());
+  if (!program_result.ok()) {
+    while(1) { __asm volatile("wfi"); }
+  }
   ctx.program.reset(std::move(program_result.get()));
   Program& program = ctx.program.value();
-
-  ET_LOG(
-      Info,
-      "Model buffer loaded, has %lu methods",
-      static_cast<unsigned long>(program.num_methods()));
+  diag_mark(kDiagStage, kStageProgramLoaded);
 
   {
     const auto method_name_result = program.get_method_name(0);
     ET_CHECK_MSG(method_name_result.ok(), "Program has no methods");
     ctx.method_name = *method_name_result;
   }
-  ET_LOG(Info, "Running method %s", ctx.method_name);
 
   Result<MethodMeta> method_meta = program.method_meta(ctx.method_name);
   if (!method_meta.ok()) {
@@ -635,28 +769,23 @@ void runner_init(
         ctx.method_name,
         (unsigned int)method_meta.error());
   }
-
-  ET_LOG(
-      Info,
-      "Setup Method allocator pool. Size: %lu bytes.",
-      static_cast<unsigned long>(method_allocation_pool_size));
+  diag_mark(kDiagStage, kStageMethodMetaReady);
 
   ctx.method_allocator.reset(
       method_allocation_pool_size, method_allocation_pool);
 
-  ctx.planned_spans.clear();
   size_t num_memory_planned_buffers = method_meta->num_memory_planned_buffers();
-  ctx.planned_spans.reserve(num_memory_planned_buffers);
+  ET_CHECK_MSG(
+      num_memory_planned_buffers <= RunnerContext::kMaxPlannedSpans,
+      "Too many planned buffers: %lu > %lu",
+      static_cast<unsigned long>(num_memory_planned_buffers),
+      static_cast<unsigned long>(RunnerContext::kMaxPlannedSpans));
+  ctx.num_planned_spans = 0;
   size_t planned_buffer_membase = ctx.method_allocator->used_size();
 
   for (size_t id = 0; id < num_memory_planned_buffers; ++id) {
     size_t buffer_size =
         static_cast<size_t>(method_meta->memory_planned_buffer_size(id).get());
-    ET_LOG(
-        Info,
-        "Setting up planned buffer %lu, size %lu.",
-        static_cast<unsigned long>(id),
-        static_cast<unsigned long>(buffer_size));
 
     /* Move to it's own allocator when MemoryPlanner is in place. */
     /* Ethos-U driver requires 16 bit alignment. */
@@ -666,18 +795,19 @@ void runner_init(
         buffer != nullptr,
         "Could not allocate memory for memory planned buffer size %lu",
         static_cast<unsigned long>(buffer_size));
-    ctx.planned_spans.push_back({buffer, buffer_size});
+    ctx.planned_spans[ctx.num_planned_spans++] = {buffer, buffer_size};
   }
 
   ctx.planned_buffer_memsize =
       ctx.method_allocator->used_size() - planned_buffer_membase;
 
   Span<Span<uint8_t>> planned_memory_span;
-  if (!ctx.planned_spans.empty()) {
+  if (ctx.num_planned_spans != 0) {
     planned_memory_span =
-        Span<Span<uint8_t>>(ctx.planned_spans.data(), ctx.planned_spans.size());
+        Span<Span<uint8_t>>(ctx.planned_spans.data(), ctx.num_planned_spans);
   }
   ctx.planned_memory.reset(planned_memory_span);
+  diag_mark(kDiagStage, kStagePlannedBuffersReady);
 
   ctx.temp_allocator.reset(temp_allocation_pool_size, temp_allocation_pool);
 
@@ -685,6 +815,7 @@ void runner_init(
       &ctx.method_allocator.value(),
       &ctx.planned_memory.value(),
       &ctx.temp_allocator.value());
+  diag_mark(kDiagStage, kStageMemoryManagerReady);
 
   size_t method_loaded_membase = ctx.method_allocator->used_size();
 
@@ -752,6 +883,12 @@ void runner_init(
   ctx.method.reset(program.load_method(
       ctx.method_name, &ctx.memory_manager.value(), event_tracer_ptr));
 
+  diag_mark_raw(31, ctx.method->ok() ? 1u : 0u);
+  if (!ctx.method->ok()) {
+    diag_mark_raw(32, static_cast<uintptr_t>(ctx.method->error()));
+    while (1) { __asm volatile("wfi"); }
+  }
+
   if (!ctx.method->ok()) {
     ET_LOG(
         Info,
@@ -761,7 +898,7 @@ void runner_init(
   }
   ctx.method_loaded_memsize =
       ctx.method_allocator->used_size() - method_loaded_membase;
-  ET_LOG(Info, "Method '%s' loaded.", ctx.method_name);
+  diag_mark(kDiagStage, kStageMethodLoaded);
 
   ET_LOG(Info, "Preparing inputs...");
   size_t input_membase = ctx.method_allocator->used_size();
@@ -834,7 +971,9 @@ void runner_init(
   ctx.input_memsize = ctx.method_allocator->used_size() - input_membase;
   ctx.executor_membase = ctx.method_allocator->used_size();
 
-  ET_LOG(Info, "Input prepared.");
+  diag_mark(kDiagStage, kStageInputsReady);
+  diag_record_method_state(ctx);
+  diag_mark(kDiagStage, kStageRunnerInitDone);
 }
 
 void log_mem_status(RunnerContext& ctx) {
@@ -1150,42 +1289,43 @@ bool verify_result(RunnerContext& ctx, const void* model_pte) {
 }
 
 bool run_model(RunnerContext& ctx, const void* model_pte) {
-  Error status;
-  ET_LOG(Info, "Starting running %d inferences...", num_inferences);
+  Error status = Error::Ok;
+  diag_mark(kDiagStage, kStageRunModelStart);
   int n = 0;
   StartMeasurements();
   for (n = 0; n < num_inferences; n++) {
-    ET_LOG(Debug, "Running inference number %d", n);
-    // Run the model.
+    diag_mark(kDiagStage, kStageExecuteEnter);
+    diag_mark_raw(34, static_cast<uintptr_t>(n));
+    diag_mark(kDiagRunnerSp, executorch_diag_read_sp());
     status = ctx.method.value()->execute();
+    diag_mark(kDiagStage, kStageExecuteReturn);
+    diag_mark_raw(35, static_cast<uintptr_t>(status));
+    diag_mark(kDiagRunnerSp, executorch_diag_read_sp());
     if (status != Error::Ok) {
       break;
     }
-    // Reset the temporary allocator holding the scratch buffer between
-    // inferences. We want to reuse the temp_allocator between inferences of the
-    // same Ethos-U custom delegate, not allocate memory with every new
-    // inference.
     ctx.temp_allocator.reset(temp_allocation_pool_size, temp_allocation_pool);
   }
-  StopMeasurements(n);
-
   ET_CHECK_MSG(
       status == Error::Ok,
       "Execution of method %s failed with status 0x%" PRIx32,
       ctx.method_name,
       status);
-
-  ET_LOG(Info, "%d inferences finished", num_inferences);
-  print_outputs(ctx);
-  bool model_ok = verify_result(ctx, model_pte);
-  ET_LOG(Info, "Model run: %d", model_ok);
-
-  return model_ok;
+  diag_mark(kDiagStage, kStageRunModelDone);
+  return true;
 }
 
 } // namespace
 
+extern "C" void run_init_array();
+extern "C" void npu_init();
+
 int main(int argc, const char* argv[]) {
+  diag_mark(kDiagStage, kStageMainStart);
+  // Call C++ global constructors via custom init function.
+  run_init_array();
+
+  npu_init();
 #if defined(SEMIHOSTING)
   ET_LOG(Info, "Running executor with parameter:");
   if (argc < 7) {
@@ -1206,16 +1346,32 @@ int main(int argc, const char* argv[]) {
 #endif
 
   executorch::runtime::runtime_init();
+  diag_mark(kDiagStage, kStageRuntimeInitDone);
   std::vector<std::pair<char*, size_t>> input_buffers;
 
 #if defined(ET_MODEL_PTE_ADDR)
-  // pte not in a known array but just on a memory/flash address
-  // As we dont know the size we pick something big enough
-  // Actual model is read from this area.
   size_t pte_size = 0x10000000;
 #else
   size_t pte_size = sizeof(model_pte);
 #endif
+
+  // Check DDR PTE mailbox: A55 writes magic+addr+size to DTCM via devmem
+  // after remoteproc start. Poll briefly to give the A55 time to write.
+  const void* ddr_pte_override = nullptr;
+  {
+    extern DdrPteMailbox ddr_pte_mailbox;
+    for (volatile int w = 0; w < 20000000 && ddr_pte_mailbox.magic != 0x50544544u; w++) {
+      __asm volatile("nop");
+    }
+    if (ddr_pte_mailbox.magic == 0x50544544u && ddr_pte_mailbox.pte_phys_addr != 0) {
+      ddr_pte_override = reinterpret_cast<const void*>(
+          static_cast<uintptr_t>(ddr_pte_mailbox.pte_phys_addr));
+      pte_size = ddr_pte_mailbox.pte_size;
+      ddr_pte_mailbox.status = 1;
+      ddr_pte_mailbox.magic = 0;
+      diag_mark(kDiagStage, 0xDD000001u);
+    }
+  }
 
   RunnerContext ctx;
 
@@ -1269,19 +1425,40 @@ int main(int argc, const char* argv[]) {
   }
 #endif
 
-  // Byte 4-7 is usually a nice magic number that could be good to print to make
-  // sure it's OK ETxx for PTE and BPxx for bundled pte where xx is a number.
-  ET_LOG(
-      Info,
-      "PTE @ %p [----%c%c%c%c]",
-      model_pte,
-      model_pte[4],
-      model_pte[5],
-      model_pte[6],
-      model_pte[7]);
+  const void* effective_pte = ddr_pte_override ? ddr_pte_override
+                                               : static_cast<const void*>(model_pte);
+  runner_init(ctx, input_buffers, pte_size, effective_pte);
+  bool model_ok = run_model(ctx, effective_pte);
 
-  runner_init(ctx, input_buffers, pte_size);
-  bool model_ok = run_model(ctx, model_pte);
+  // Write output summary to diag: first 10 values, argmax, max value, count.
+  if (model_ok) {
+    auto& method = *ctx.method.value();
+    if (method.outputs_size() > 0) {
+      auto out = method.get_output(0);
+      if (out.isTensor()) {
+        auto t = out.toTensor();
+        size_t total_floats = t.nbytes() / 4;
+        size_t n_dump = total_floats < 10 ? total_floats : 10;
+        const float* fp = static_cast<const float*>(t.const_data_ptr());
+        for (size_t i = 0; i < n_dump; i++) {
+          uint32_t w;
+          std::memcpy(&w, &fp[i], 4);
+          diag_mark_raw(2 + i, w);
+        }
+        uint32_t argmax = 0;
+        float maxval = fp[0];
+        for (size_t i = 1; i < total_floats; i++) {
+          if (fp[i] > maxval) { maxval = fp[i]; argmax = i; }
+        }
+        uint32_t maxval_bits;
+        std::memcpy(&maxval_bits, &maxval, 4);
+        diag_mark_raw(12, argmax);
+        diag_mark_raw(13, maxval_bits);
+        diag_mark_raw(38, static_cast<uint32_t>(total_floats));
+      }
+    }
+  }
+
   ET_LOG(Info, "Model run: %d", model_ok);
 
   log_mem_status(ctx);
@@ -1290,9 +1467,6 @@ int main(int argc, const char* argv[]) {
   ET_CHECK_MSG(model_ok == true, "Problem running model");
 
   ET_LOG(Info, "Program complete, exiting.");
-#if defined(SEMIHOSTING)
-  _exit(0);
-#endif
-  ET_LOG(Info, "\04");
+  while (1) { __asm volatile("wfi"); }
   return 0;
 }

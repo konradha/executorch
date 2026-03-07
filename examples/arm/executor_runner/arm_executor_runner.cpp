@@ -746,8 +746,15 @@ void runner_init(
 #endif
   ctx.loader.reset(program_data, ctx.program_data_len);
   auto& loader = ctx.loader.value();
+  // 0xBB = pre-load marker; addr/size in slots 25/26
+  diag_mark_raw(24, 0xBBu);
+  diag_mark_raw(25, reinterpret_cast<uintptr_t>(program_data));
+  diag_mark_raw(26, static_cast<uintptr_t>(ctx.program_data_len));
 
   Result<Program> program_result = Program::load(&loader);
+  // 0xCC = post-load marker; error code in slot 28
+  diag_mark_raw(27, 0xCCu);
+  diag_mark_raw(28, program_result.ok() ? 0u : static_cast<uintptr_t>(program_result.error()));
   if (!program_result.ok()) {
     while(1) { __asm volatile("wfi"); }
   }

@@ -213,6 +213,57 @@ else:
 REMOTE_EOF
 }
 
+# ─── Video inference pipeline ────────────────────────────────────────────────
+
+imx93_video() {
+    local pte="${1:-}"
+    local frames_dir="${2:-}"
+    local output_dir="${3:-}"
+    local mbox_addr="${4:-}"
+    local diag_addr="${5:-}"
+    local vmbox_addr="${6:-}"
+    local input_size="${7:-602112}"   # default: 1x3x224x224 float32
+    local output_size="${8:-4000}"    # default: 1x1000 float32 (classification)
+
+    if [ -z "$pte" ] || [ -z "$frames_dir" ] || [ -z "$mbox_addr" ]; then
+        echo "Usage: imx93_video <model.pte> <frames_dir> <output_dir> <pte_mbox> <diag> <video_mbox> [input_size] [output_size]"
+        echo ""
+        echo "Addresses from ELF (M33 addr + 0x200000):"
+        echo "  arm-none-eabi-nm ${ELF} | grep -E 'ddr_pte_mailbox|executorch_diag_words|video_mailbox'"
+        echo ""
+        echo "Preprocess video first:"
+        echo "  python -m examples.arm.imx93.preprocess_video preprocess --video input.mp4 --output-dir frames/ --model mv2"
+        return 1
+    fi
+
+    [ -z "$output_dir" ] && output_dir="/tmp/video_results"
+
+    echo "=== Copying frames and video_driver to device ==="
+    eval ${SCP_CMD} -r "${frames_dir}" "${REMOTE_USER}:/tmp/video_frames"
+    eval ${SCP_CMD} "${pte}" "${REMOTE_USER}:/tmp/model.pte"
+    eval ${SCP_CMD} "${REPO_ROOT}/examples/arm/imx93/video_driver.c" "${REMOTE_USER}:/tmp/video_driver.c"
+
+    echo "=== Building and running video_driver on device ==="
+    eval ${SSH_CMD} "bash -s" <<REMOTE_EOF
+set -e
+cd /tmp
+gcc -o video_driver video_driver.c -O2
+mkdir -p ${output_dir}
+echo "Running: sudo ./video_driver /tmp/model.pte /tmp/video_frames ${output_dir} ${mbox_addr} ${diag_addr} ${vmbox_addr} ${input_size} ${output_size}"
+sudo ./video_driver /tmp/model.pte /tmp/video_frames ${output_dir} ${mbox_addr} ${diag_addr} ${vmbox_addr} ${input_size} ${output_size}
+REMOTE_EOF
+
+    echo "=== Copying results back ==="
+    eval ${SCP_CMD} -r "${REMOTE_USER}:${output_dir}" "${BUILD_DIR}/video_results/"
+    echo "Results in ${BUILD_DIR}/video_results/"
+    echo ""
+    echo "Reconstruct video with:"
+    echo "  python -m examples.arm.imx93.preprocess_video reconstruct \\"
+    echo "    --video <original.mp4> --output-dir ${frames_dir} \\"
+    echo "    --results-dir ${BUILD_DIR}/video_results/ \\"
+    echo "    --model <model_name> --output-video output_npu.mp4"
+}
+
 # ─── Quick reference ─────────────────────────────────────────────────────────
 
 imx93_help() {
@@ -226,8 +277,20 @@ i.MX93 ExecuTorch Bringup Commands
   imx93_ddr_load <pte> <mbox> <diag>   Load large model via DDR mailbox
   imx93_numerics [pte]       Run host-side reference inference
   imx93_trace                Read M33 trace buffer
+  imx93_video <pte> <frames> <out> <mbox> <diag> <vmbox> [in_sz] [out_sz]
+                             Run video inference pipeline on device
 
-Typical workflow:
+Video pipeline workflow:
+  1. python -m examples.arm.imx93.preprocess_video preprocess \
+       --video input.mp4 --output-dir frames/ --model mv2
+  2. imx93_build && imx93_deploy
+  3. imx93_video model.pte frames/ /tmp/results 0xAAA 0xBBB 0xCCC
+  4. python -m examples.arm.imx93.preprocess_video reconstruct \
+       --video input.mp4 --output-dir frames/ \
+       --results-dir arm_test/video_results/ \
+       --model mv2 --output-video result.mp4
+
+Typical single-inference workflow:
   1. imx93_build
   2. imx93_deploy
   3. imx93_poll 0x20205XXX       (addr from build output)

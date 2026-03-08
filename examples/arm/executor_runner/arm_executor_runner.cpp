@@ -178,6 +178,19 @@ struct DdrPteMailbox {
   volatile uint32_t status;
 };
 
+struct VideoMailbox {
+  volatile uint32_t magic;       // 0x56494446 ("VIDF")
+  volatile uint32_t input_phys;
+  volatile uint32_t input_size;
+  volatile uint32_t output_phys;
+  volatile uint32_t output_size;
+  volatile uint32_t command;     // 0=idle, 1=infer, 0xFF=stop
+  volatile uint32_t status;      // 0=idle, 1=busy, 2=done, 0xEE=error
+  volatile uint32_t frame_id;
+  volatile uint32_t infer_cycles;
+  volatile uint32_t output_actual;
+};
+
 using executorch::aten::ScalarType;
 using executorch::aten::Tensor;
 using executorch::extension::BufferDataLoader;
@@ -1472,6 +1485,116 @@ int main(int argc, const char* argv[]) {
   write_etdump(ctx);
 
   ET_CHECK_MSG(model_ok == true, "Problem running model");
+
+  // Video inference loop: if A55 has set up a VideoMailbox, enter continuous
+  // inference mode. A55 writes input frames to DDR and sets command=1; M33
+  // copies input to the method's input tensor, runs inference, copies output
+  // to DDR, and signals done.
+  {
+    extern VideoMailbox video_mailbox;
+    // Poll briefly for video mailbox activation
+    for (volatile int w = 0; w < 50000000 && video_mailbox.magic != 0x56494446u; w++) {
+      __asm volatile("nop");
+    }
+    if (video_mailbox.magic == 0x56494446u) {
+      diag_mark(kDiagStage, 0xBF000001u);
+      ET_LOG(Info, "Video mode activated");
+
+      auto& method = *ctx.method.value();
+      MethodMeta method_meta = method.method_meta();
+
+      // Get input tensor pointer for overwriting each frame
+      EValue* input_evalue = ctx.temp_allocator.allocateList<EValue>(1);
+      method.get_inputs(input_evalue, 1);
+      void* input_ptr = nullptr;
+      size_t input_nbytes = 0;
+      if (input_evalue[0].isTensor()) {
+        Tensor& t = input_evalue[0].toTensor();
+        input_ptr = t.mutable_data_ptr<uint8_t>();
+        input_nbytes = t.nbytes();
+      }
+
+      video_mailbox.status = 0; // idle, ready
+
+      while (video_mailbox.command != 0xFFu) {
+        // Wait for command=1 (new frame ready)
+        if (video_mailbox.command != 1) {
+          __asm volatile("wfi");
+          continue;
+        }
+
+        video_mailbox.status = 1; // busy
+
+        // Read cycle counter start
+        uint32_t cyc_start = 0;
+#if defined(__ARM_ARCH_8M_MAIN__) || defined(__ARM_ARCH_8_1M_MAIN__)
+        cyc_start = *reinterpret_cast<volatile uint32_t*>(0xE0001004); // DWT->CYCCNT
+#endif
+
+        // Copy input from DDR to method's input tensor
+        if (input_ptr && video_mailbox.input_phys != 0) {
+          size_t copy_size = video_mailbox.input_size;
+          if (copy_size > input_nbytes) copy_size = input_nbytes;
+          std::memcpy(input_ptr,
+                      reinterpret_cast<const void*>(
+                        static_cast<uintptr_t>(video_mailbox.input_phys)),
+                      copy_size);
+        }
+
+        // Run inference
+        ctx.temp_allocator.reset(temp_allocation_pool_size, temp_allocation_pool);
+        Error err = method.execute();
+
+        uint32_t cyc_end = 0;
+#if defined(__ARM_ARCH_8M_MAIN__) || defined(__ARM_ARCH_8_1M_MAIN__)
+        cyc_end = *reinterpret_cast<volatile uint32_t*>(0xE0001004);
+#endif
+
+        if (err != Error::Ok) {
+          video_mailbox.status = 0xEEu;
+          video_mailbox.command = 0;
+          continue;
+        }
+
+        // Copy output to DDR
+        uint32_t out_written = 0;
+        if (method.outputs_size() > 0) {
+          auto out = method.get_output(0);
+          if (out.isTensor()) {
+            auto t = out.toTensor();
+            uint32_t out_bytes = t.nbytes();
+            if (out_bytes <= video_mailbox.output_size &&
+                video_mailbox.output_phys != 0) {
+              std::memcpy(
+                reinterpret_cast<void*>(
+                  static_cast<uintptr_t>(video_mailbox.output_phys)),
+                t.const_data_ptr(),
+                out_bytes);
+              out_written = out_bytes;
+            }
+            // Also write argmax to diag for quick polling
+            const float* fp = static_cast<const float*>(t.const_data_ptr());
+            size_t total = t.nbytes() / 4;
+            uint32_t argmax = 0;
+            float maxval = fp[0];
+            for (size_t i = 1; i < total; i++) {
+              if (fp[i] > maxval) { maxval = fp[i]; argmax = i; }
+            }
+            diag_mark_raw(12, argmax);
+          }
+        }
+
+        video_mailbox.output_actual = out_written;
+        video_mailbox.infer_cycles = cyc_end - cyc_start;
+        video_mailbox.frame_id++;
+        video_mailbox.command = 0;  // consumed
+        video_mailbox.status = 2;   // done
+      }
+
+      ET_LOG(Info, "Video mode stopped, %lu frames", (unsigned long)video_mailbox.frame_id);
+      diag_mark(kDiagStage, 0xBF000002u);
+    }
+  }
 
   ET_LOG(Info, "Program complete, exiting.");
   while (1) { __asm volatile("wfi"); }

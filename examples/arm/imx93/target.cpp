@@ -64,9 +64,28 @@ struct DdrPteMailbox {
   volatile uint32_t status;          // written by M33: 1=running, 0xDEAD=error
 };
 
+// Video inference mailbox: A55 writes input frames here, M33 polls for them.
+// After model load, if video_mailbox.magic == 0x56494446 ("VIDF"), M33 enters
+// a continuous inference loop: poll command, copy input, execute, write output.
+struct VideoMailbox {
+  volatile uint32_t magic;           // 0x56494446 ("VIDF") when active
+  volatile uint32_t input_phys;      // DDR phys addr of input tensor
+  volatile uint32_t input_size;      // input tensor bytes
+  volatile uint32_t output_phys;     // DDR phys addr for output tensor
+  volatile uint32_t output_size;     // output buffer capacity
+  volatile uint32_t command;         // A55->M33: 0=idle, 1=infer, 0xFF=stop
+  volatile uint32_t status;          // M33->A55: 0=idle, 1=busy, 2=done, 0xEE=error
+  volatile uint32_t frame_id;        // incremented by M33 after each inference
+  volatile uint32_t infer_cycles;    // M33 cycle count for last inference
+  volatile uint32_t output_actual;   // actual output size written
+};
+
 extern "C" {
 __attribute__((section(".data")))
 DdrPteMailbox ddr_pte_mailbox = {0, 0, 0, 0};
+
+__attribute__((section(".data")))
+VideoMailbox video_mailbox = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 struct ethosu_driver* executorch_get_ethosu_driver() {
   return &ethosu_drv;

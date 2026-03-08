@@ -163,7 +163,7 @@ class EthosUBackend final : public ::executorch::runtime::BackendInterface {
 
     ExecutionHandle* execution_handle =
         static_cast<ExecutionHandle*>(input_handle);
-    VelaHandles handles;
+    VelaHandles handles = {};
 
     // Command stream - we know at this point it's aligned
     EXECUTORCH_PROF_START(

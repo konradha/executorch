@@ -126,8 +126,14 @@ static int cma_alloc(struct cma_buf *buf, size_t size) {
     buf->size = size;
     buf->virt = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, alloc.fd, 0);
     if (buf->virt == MAP_FAILED) { perror("mmap cma"); close(alloc.fd); return -1; }
+    /* Touch first page to ensure it's resident in pagemap */
+    memset(buf->virt, 0, size < 4096 ? size : 4096);
     buf->phys = virt_to_phys(buf->virt);
-    if (buf->phys == 0) { fprintf(stderr, "virt_to_phys failed\n"); return -1; }
+    if (buf->phys == 0) {
+        fprintf(stderr, "virt_to_phys failed for size=%zu\n", size);
+        fprintf(stderr, "  (ensure running as root: sudo ./video_driver ...)\n");
+        return -1;
+    }
     return 0;
 }
 
@@ -288,10 +294,10 @@ int main(int argc, char **argv) {
         devmem_write32(vmbox_addr + 24, 0);  /* status = idle */
         devmem_write32(vmbox_addr + 20, 1);  /* command = infer */
 
-        /* Poll for completion */
+        /* Poll for completion — segmentation can take 30-800ms on NPU */
         uint32_t status = 0;
-        for (int w = 0; w < 10000; w++) {
-            usleep(100); /* 0.1ms */
+        for (int w = 0; w < 20000; w++) {
+            usleep(500); /* 0.5ms, up to 10s total timeout */
             status = devmem_read32(vmbox_addr + 24); /* status */
             if (status == 2 || status == 0xEEu) break;
         }

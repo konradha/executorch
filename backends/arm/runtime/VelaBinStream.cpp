@@ -54,6 +54,9 @@ bool vela_bin_validate(const char* data, int size) {
 bool vela_bin_read(const char* data, VelaHandles* handles, int size) {
   const char* ptr = data;
 
+  handles->vela_model_data = nullptr;
+  handles->vela_model_size = 0;
+
   while (ptr - data < size) {
     VelaBinBlock* b = reinterpret_cast<VelaBinBlock*>(const_cast<char*>(ptr));
     ptr += sizeof(VelaBinBlock) + next_mul_16(b->size);
@@ -82,6 +85,9 @@ bool vela_bin_read(const char* data, VelaHandles* handles, int size) {
       handles->inputs = reinterpret_cast<VelaIOs*>(b->data);
     } else if (!strncmp(b->name, "outputs", strlen("outputs"))) {
       handles->outputs = reinterpret_cast<VelaIOs*>(b->data);
+    } else if (!strncmp(b->name, "vela_model", strlen("vela_model"))) {
+      handles->vela_model_data = b->data;
+      handles->vela_model_size = b->size;
     } else if (!strncmp(
                    b->name, "vela_end_stream", strlen("vela_end_stream"))) {
       // expect vela_end_stream last
@@ -91,9 +97,11 @@ bool vela_bin_read(const char* data, VelaHandles* handles, int size) {
       }
       return true;
     } else {
-      // Unrecognised block name
-      ET_LOG(Error, "Invalid block name or malformed binary");
-      return false;
+      // Skip unrecognized blocks for forward compatibility
+      ET_LOG(
+          Debug,
+          "Skipping unknown block in vela_bin_stream: %.16s",
+          b->name);
     }
   }
 

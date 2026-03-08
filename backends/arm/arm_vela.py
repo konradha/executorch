@@ -114,6 +114,12 @@ def vela_compile(
             bin_blocks["inputs"] = vela_bin_pack_io("input", data)
             bin_blocks["outputs"] = vela_bin_pack_io("output", data)
 
+            # Include full Vela-compiled model for Linux kernel driver path
+            tflite_path = os.path.join(output_dir, "out_vela.tflite")
+            if os.path.exists(tflite_path):
+                with open(tflite_path, "rb") as tf:
+                    bin_blocks["vela_model"] = tf.read()
+
             bin_blocks["vela_end_stream"] = b""
 
             # Emit the NPZ regions as:

@@ -1500,26 +1500,31 @@ int main(int argc, const char* argv[]) {
       diag_mark(kDiagStage, 0xBF000001u);
       ET_LOG(Info, "Video mode activated");
 
-      auto& method = *ctx.method.value();
-      MethodMeta method_meta = method.method_meta();
+      Method& method = *ctx.method.value();
 
-      // Get input tensor pointer for overwriting each frame
-      EValue* input_evalue = ctx.temp_allocator.allocateList<EValue>(1);
-      method.get_inputs(input_evalue, 1);
+      // Get input tensor pointer for overwriting each frame.
+      // mutable_input() returns a reference to the actual internal EValue,
+      // not a copy — so we can write directly into the tensor's data buffer.
       void* input_ptr = nullptr;
       size_t input_nbytes = 0;
-      if (input_evalue[0].isTensor()) {
-        Tensor& t = input_evalue[0].toTensor();
-        input_ptr = t.mutable_data_ptr<uint8_t>();
-        input_nbytes = t.nbytes();
+      if (method.inputs_size() > 0) {
+        EValue& inp = method.mutable_input(0);
+        if (inp.isTensor()) {
+          Tensor& t = inp.toTensor();
+          input_ptr = t.mutable_data_ptr<uint8_t>();
+          input_nbytes = t.nbytes();
+        }
       }
+      diag_mark_raw(40, reinterpret_cast<uintptr_t>(input_ptr));
+      diag_mark_raw(41, static_cast<uint32_t>(input_nbytes));
 
       video_mailbox.status = 0; // idle, ready
 
       while (video_mailbox.command != 0xFFu) {
-        // Wait for command=1 (new frame ready)
+        // Poll for command=1 (new frame ready)
+        // No wfi — A55 writes to DTCM via devmem, no interrupt generated
         if (video_mailbox.command != 1) {
-          __asm volatile("wfi");
+          for (volatile int p = 0; p < 1000; p++) { __asm volatile("nop"); }
           continue;
         }
 
@@ -1559,9 +1564,9 @@ int main(int argc, const char* argv[]) {
         // Copy output to DDR
         uint32_t out_written = 0;
         if (method.outputs_size() > 0) {
-          auto out = method.get_output(0);
+          EValue out = method.get_output(0);
           if (out.isTensor()) {
-            auto t = out.toTensor();
+            Tensor t = out.toTensor();
             uint32_t out_bytes = t.nbytes();
             if (out_bytes <= video_mailbox.output_size &&
                 video_mailbox.output_phys != 0) {

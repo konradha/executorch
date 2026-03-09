@@ -167,6 +167,10 @@ if(EXECUTORCH_BUILD_ARM_BAREMETAL OR EXECUTORCH_BUILD_ARM_ETHOSU_LINUX
       executorch_delegate_ethos_u
       PRIVATE ${ETHOSU_IMX_DRIVER_SOURCE_DIR}/driver_library/src/ethosu.cpp
     )
+    set_source_files_properties(
+      ${ETHOSU_IMX_DRIVER_SOURCE_DIR}/driver_library/src/ethosu.cpp
+      PROPERTIES COMPILE_FLAGS "-Wno-error"
+    )
   endif()
 
   install(TARGETS executorch_delegate_ethos_u EXPORT ExecuTorchTargets)

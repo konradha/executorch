@@ -114,8 +114,25 @@ def vela_compile(
             bin_blocks["inputs"] = vela_bin_pack_io("input", data)
             bin_blocks["outputs"] = vela_bin_pack_io("output", data)
 
-            # Include full Vela-compiled model for Linux kernel driver path
+            # Include full Vela-compiled model for Linux kernel driver path.
+            # The raw output format only produces NPZ, so run Vela again
+            # with tflite output to get the full compiled model.
             tflite_path = os.path.join(output_dir, "out_vela.tflite")
+            if not os.path.exists(tflite_path):
+                tflite_dir = os.path.join(dir, "output_tflite")
+                tflite_args = [
+                    a
+                    for a in args
+                    if not a.startswith("--output-format")
+                    and not a.startswith("--output-dir")
+                ]
+                tflite_args.append("--output-format=tflite")
+                tflite_args.append(f"--output-dir={tflite_dir}")
+                try:
+                    vela.main(" ".join(tflite_args).split(" "))
+                    tflite_path = os.path.join(tflite_dir, "out_vela.tflite")
+                except Exception:
+                    pass
             if os.path.exists(tflite_path):
                 with open(tflite_path, "rb") as tf:
                     bin_blocks["vela_model"] = tf.read()

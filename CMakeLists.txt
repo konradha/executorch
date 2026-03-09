@@ -627,12 +627,13 @@ install(FILES tools/cmake/executorch-config.cmake
 
 if(EXECUTORCH_BUILD_ARM_BAREMETAL
    OR EXECUTORCH_BUILD_ARM_ETHOSU_LINUX
+   OR EXECUTORCH_BUILD_ARM_ETHOSU_IMX
    OR EXECUTORCH_BUILD_VGF
 )
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/backends/arm)
 endif()
 
-if(EXECUTORCH_BUILD_ARM_BAREMETAL OR EXECUTORCH_BUILD_ARM_ETHOSU_LINUX)
+if(EXECUTORCH_BUILD_ARM_BAREMETAL)
   list(APPEND _executorch_backends executorch_delegate_ethos_u)
 endif()
 
@@ -1236,18 +1237,22 @@ if(EXECUTORCH_BUILD_EXECUTOR_RUNNER)
   endif()
   target_link_libraries(executor_runner PRIVATE ${_executor_runner_libs})
   target_compile_options(executor_runner PUBLIC ${_common_compile_options})
-  if(EXECUTORCH_BUILD_ARM_ETHOSU_LINUX)
-    target_compile_definitions(
-      executor_runner PRIVATE EXECUTORCH_BUILD_ARM_ETHOSU_LINUX=1
-    )
+  if(EXECUTORCH_BUILD_ARM_ETHOSU_LINUX OR EXECUTORCH_BUILD_ARM_ETHOSU_IMX)
+    if(EXECUTORCH_BUILD_ARM_ETHOSU_LINUX)
+      target_compile_definitions(
+        executor_runner PRIVATE EXECUTORCH_BUILD_ARM_ETHOSU_LINUX=1
+      )
+    elseif(EXECUTORCH_BUILD_ARM_ETHOSU_IMX)
+      target_compile_definitions(
+        executor_runner PRIVATE EXECUTORCH_BUILD_ARM_ETHOSU_IMX=1
+      )
+    endif()
     target_link_libraries(
       executor_runner
       PRIVATE $<LINK_LIBRARY:WHOLE_ARCHIVE,executorch_delegate_ethos_u>
     )
-    # Wrap static linking like the delegate_runner to keep images
-    # self-contained.
     target_link_options(
-      executor_runner PRIVATE -static-libstdc++ -static-libgcc
+      executor_runner PRIVATE -static
     )
   endif()
 

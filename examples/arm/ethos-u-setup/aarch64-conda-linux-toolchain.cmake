@@ -1,0 +1,21 @@
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_SYSTEM_PROCESSOR aarch64)
+
+if(DEFINED ENV{CONDA_PREFIX})
+  set(_prefix "$ENV{CONDA_PREFIX}")
+else()
+  message(FATAL_ERROR "CONDA_PREFIX not set; activate the et-cross environment")
+endif()
+
+set(CMAKE_C_COMPILER "${_prefix}/bin/aarch64-conda-linux-gnu-cc")
+set(CMAKE_CXX_COMPILER "${_prefix}/bin/aarch64-conda-linux-gnu-c++")
+set(CMAKE_AR "${_prefix}/bin/aarch64-conda-linux-gnu-ar")
+set(CMAKE_RANLIB "${_prefix}/bin/aarch64-conda-linux-gnu-ranlib")
+set(CMAKE_STRIP "${_prefix}/bin/aarch64-conda-linux-gnu-strip")
+
+set(CMAKE_SYSROOT "${_prefix}/aarch64-conda-linux-gnu/sysroot")
+set(CMAKE_FIND_ROOT_PATH "${CMAKE_SYSROOT}")
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)

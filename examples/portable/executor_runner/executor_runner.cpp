@@ -56,7 +56,11 @@
 
 static uint8_t method_allocator_pool[4 * 1024U * 1024U]; // 4 MB
 
+#if defined(EXECUTORCH_BUILD_ARM_ETHOSU_IMX)
+static uint8_t temp_allocator_pool[16U * 1024U * 1024U]; // 16 MB for NPU scratch
+#else
 static uint8_t temp_allocator_pool[1024U * 1024U];
+#endif
 
 DEFINE_string(
     model_path,

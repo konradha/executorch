@@ -205,10 +205,44 @@ Error platform_execute(
           model_buf->data(), handles.vela_model_data, handles.vela_model_size);
       state->network = std::make_shared<EthosU::Network>(device, model_buf);
 
+      // Compute required arena: max of scratch size and all I/O extents
       size_t arena_capacity = handles.scratch_data_size;
+      size_t n_ifm = state->network->getInputCount();
+      size_t n_ofm = state->network->getOutputCount();
+      for (size_t i = 0; i < n_ifm; i++) {
+        size_t extent = static_cast<size_t>(
+            state->network->getInputDataOffset(i)) +
+            state->network->getIfmDims()[i];
+        if (extent > arena_capacity) {
+          arena_capacity = extent;
+        }
+      }
+      for (size_t i = 0; i < n_ofm; i++) {
+        size_t extent = static_cast<size_t>(
+            state->network->getOutputDataOffset(i)) +
+            state->network->getOfmDims()[i];
+        if (extent > arena_capacity) {
+          arena_capacity = extent;
+        }
+      }
       if (arena_capacity < (1u << 20)) {
         arena_capacity = 1u << 20;
       }
+      // Use at least 16 MB (the NXP default) — Vela's scratch_data_size
+      // may not fully account for DMA alignment and internal bookkeeping
+      constexpr size_t kMinArenaMB = 16u << 20;
+      if (arena_capacity < kMinArenaMB) {
+        arena_capacity = kMinArenaMB;
+      }
+      // Round up to next MB boundary
+      arena_capacity = (arena_capacity + ((1u << 20) - 1)) & ~((1u << 20) - 1);
+      ET_LOG(
+          Info,
+          "Ethos-U arena: scratch=%zu, computed=%zu, ifm=%zu, ofm=%zu",
+          static_cast<size_t>(handles.scratch_data_size),
+          arena_capacity,
+          n_ifm,
+          n_ofm);
       state->arena =
           std::make_shared<EthosU::Buffer>(device, arena_capacity);
       state->arena->resize(arena_capacity);
@@ -218,6 +252,11 @@ Error platform_execute(
     for (int i = 0; i < input_count; i++) {
       auto tensor = args[i]->toTensor();
       int32_t offset = state->network->getInputDataOffset(i);
+      size_t ifm_size = state->network->getIfmDims()[i];
+      ET_LOG(
+          Info,
+          "  IFM[%d]: offset=%d, driver_size=%zu, tensor_bytes=%zu",
+          i, offset, ifm_size, static_cast<size_t>(tensor.nbytes()));
       std::memcpy(
           state->arena->data() + offset,
           tensor.const_data_ptr<char>(),
@@ -235,6 +274,12 @@ Error platform_execute(
     for (int i = 0; i < output_count; i++) {
       layout.output_offset[i] = state->network->getOutputDataOffset(i);
       layout.output_size[i] = state->network->getOfmDims()[i];
+      ET_LOG(
+          Info,
+          "  OFM[%d]: offset=%u, driver_size=%u",
+          i,
+          static_cast<unsigned>(layout.output_offset[i]),
+          static_cast<unsigned>(layout.output_size[i]));
     }
 
     // Run inference

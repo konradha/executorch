@@ -388,6 +388,7 @@ TARGETS = [
     "ethos-u55-64",
     "ethos-u55-128",
     "ethos-u55-256",
+    "ethos-u65-256",
     "ethos-u85-128",
     "ethos-u85-256",
     "ethos-u85-512",
@@ -434,6 +435,7 @@ def get_compile_spec(
     config: Optional[str] = None,
     debug_mode: Optional[str] = None,
     direct_drive: bool = False,
+    extra_compiler_flags: Optional[List[str]] = None,
 ) -> TosaCompileSpec | EthosUCompileSpec | VgfCompileSpec:
     compile_spec = None
     if target.startswith("TOSA"):
@@ -441,6 +443,8 @@ def get_compile_spec(
         compile_spec = TosaCompileSpec(tosa_spec)
     elif "ethos-u" in target:
         extra_flags = ["--verbose-operators", "--verbose-cycle-estimate"]
+        if extra_compiler_flags:
+            extra_flags.extend(extra_compiler_flags)
         if debug_mode is not None:
             extra_flags.append("--enable-debug-db")
         if direct_drive:
@@ -623,6 +627,12 @@ def get_args():
         default=False,
         help="Flag for enabling direct drive.",
     )
+    parser.add_argument(
+        "--extra_compiler_flag",
+        action="append",
+        default=[],
+        help="Additional Vela compiler flags. Repeat for multiple flags.",
+    )
     args = parser.parse_args()
 
     if args.evaluate and (
@@ -771,6 +781,7 @@ def to_edge_TOSA_delegate(
         args.config,
         args.enable_debug_mode,
         args.direct_drive,
+        args.extra_compiler_flag,
     )
 
     model_quant = None
@@ -788,11 +799,6 @@ def to_edge_TOSA_delegate(
             _check_ir_validity=False,
         ),
     )
-
-    # Replace quantized_decomposed::{quantize,dequantize}_per_tensor nodes
-    # with cortex_m:: equivalents for int8 QDQ ops remaining outside the
-    # delegated subgraph.
-    edge = _apply_replace_quant_nodes(edge, args)
 
     return model_quant, edge
 
@@ -885,6 +891,7 @@ def to_edge_no_delegate(
             args.config,
             args.enable_debug_mode,
             args.direct_drive,
+            args.extra_compiler_flag,
         )
         model, exported_program = quantize_model(
             args, model, example_inputs, compile_spec

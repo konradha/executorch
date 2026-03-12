@@ -156,6 +156,16 @@ class EthosUBackend final : public ::executorch::runtime::BackendInterface {
     const int input_count = handles.inputs ? handles.inputs->count : 0;
     const int output_count = handles.outputs ? handles.outputs->count : 0;
 
+#if defined(EXECUTORCH_BUILD_ARM_ETHOSU_IMX)
+    return platform_execute(
+        context,
+        execution_handle,
+        handles,
+        input_count,
+        output_count,
+        args,
+        nullptr);
+#else
     MemoryAllocator* temp_allocator = context.get_temp_allocator();
     // Use a temporary allocator for the intermediate tensors of the
     // computation. The allocator is released in runtime/executor/method.cpp at
@@ -266,6 +276,7 @@ class EthosUBackend final : public ::executorch::runtime::BackendInterface {
         ethosu_scratch);
     EXECUTORCH_PROF_END(event_tracer, event_tracer_local_scope);
     return platform_status;
+#endif
   }
 
   void destroy(DelegateHandle* handle) const override {

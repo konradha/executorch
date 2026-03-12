@@ -60,6 +60,8 @@ typedef struct {
   size_t scratch_data_size;
   VelaIOs* inputs;
   VelaIOs* outputs;
+  const char* vela_model_data;
+  size_t vela_model_size;
 } VelaHandles;
 
 /* Takes in the preprocessed vela_bin_stream wire format and returns data

@@ -114,6 +114,26 @@ def vela_compile(
             bin_blocks["inputs"] = vela_bin_pack_io("input", data)
             bin_blocks["outputs"] = vela_bin_pack_io("output", data)
 
+            tflite_path = os.path.join(output_dir, "out_vela.tflite")
+            if not os.path.exists(tflite_path):
+                tflite_dir = os.path.join(dir, "output_tflite")
+                tflite_args = [
+                    arg
+                    for arg in args
+                    if not arg.startswith("--output-format")
+                    and not arg.startswith("--output-dir")
+                ]
+                tflite_args.append("--output-format=tflite")
+                tflite_args.append(f"--output-dir={tflite_dir}")
+                try:
+                    vela.main(" ".join(tflite_args).split(" "))
+                    tflite_path = os.path.join(tflite_dir, "out_vela.tflite")
+                except Exception:
+                    pass
+            if os.path.exists(tflite_path):
+                with open(tflite_path, "rb") as tf:
+                    bin_blocks["vela_model"] = tf.read()
+
             bin_blocks["vela_end_stream"] = b""
 
             # Emit the NPZ regions as:

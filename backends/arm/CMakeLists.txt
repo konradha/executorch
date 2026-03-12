@@ -39,16 +39,42 @@ set(ETHOSU_LINUX_DRIVER_SOURCE_DIR
       PATH
       "Optional local path to an existing ethos-u-linux-driver stack checkout"
 )
+set(ETHOSU_IMX_DRIVER_GIT_REPO
+    "https://github.com/nxp-imx/ethos-u-driver-stack-imx.git"
+    CACHE STRING "Git repository for the NXP i.MX Ethos-U driver stack"
+)
+set(ETHOSU_IMX_DRIVER_GIT_TAG
+    "lf-6.12.49-2.2.0"
+    CACHE STRING "Git tag/branch for the NXP i.MX Ethos-U driver stack"
+)
+set(ETHOSU_IMX_DRIVER_SOURCE_DIR
+    ""
+    CACHE PATH "Optional local path to an NXP ethos-u-driver-stack-imx checkout"
+)
 
-if(EXECUTORCH_BUILD_ARM_BAREMETAL AND EXECUTORCH_BUILD_ARM_ETHOSU_LINUX)
+set(_ethosu_backend_count 0)
+if(EXECUTORCH_BUILD_ARM_BAREMETAL)
+  math(EXPR _ethosu_backend_count "${_ethosu_backend_count} + 1")
+endif()
+if(EXECUTORCH_BUILD_ARM_ETHOSU_LINUX)
+  math(EXPR _ethosu_backend_count "${_ethosu_backend_count} + 1")
+endif()
+if(EXECUTORCH_BUILD_ARM_ETHOSU_IMX)
+  math(EXPR _ethosu_backend_count "${_ethosu_backend_count} + 1")
+endif()
+if(_ethosu_backend_count GREATER 1)
   message(
     FATAL_ERROR
-      "EXECUTORCH_BUILD_ARM_BAREMETAL and EXECUTORCH_BUILD_ARM_ETHOSU_LINUX cannot be enabled at the same time."
+      "Only one Ethos-U platform backend may be enabled at a time: "
+      "EXECUTORCH_BUILD_ARM_BAREMETAL, EXECUTORCH_BUILD_ARM_ETHOSU_LINUX, "
+      "EXECUTORCH_BUILD_ARM_ETHOSU_IMX."
   )
 endif()
 
-# Ethos-U backend builds (bare metal or Linux driver stack)
-if(EXECUTORCH_BUILD_ARM_BAREMETAL OR EXECUTORCH_BUILD_ARM_ETHOSU_LINUX)
+# Ethos-U backend builds
+if(EXECUTORCH_BUILD_ARM_BAREMETAL OR EXECUTORCH_BUILD_ARM_ETHOSU_LINUX
+   OR EXECUTORCH_BUILD_ARM_ETHOSU_IMX
+)
 
   add_compile_options("-Wall" "-Werror")
 
@@ -61,6 +87,11 @@ if(EXECUTORCH_BUILD_ARM_BAREMETAL OR EXECUTORCH_BUILD_ARM_ETHOSU_LINUX)
 
   add_library(executorch_delegate_ethos_u STATIC ${_arm_backend_sources})
   target_link_libraries(executorch_delegate_ethos_u PUBLIC executorch_core)
+  if(EXECUTORCH_BUILD_ARM_ETHOSU_IMX)
+    target_compile_definitions(
+      executorch_delegate_ethos_u PRIVATE EXECUTORCH_BUILD_ARM_ETHOSU_IMX=1
+    )
+  endif()
 
   if(EXECUTORCH_BUILD_ARM_BAREMETAL)
     target_sources(
@@ -105,6 +136,71 @@ if(EXECUTORCH_BUILD_ARM_BAREMETAL OR EXECUTORCH_BUILD_ARM_ETHOSU_LINUX)
     target_sources(
       executorch_delegate_ethos_u
       PRIVATE ${ETHOSU_LINUX_DRIVER_SOURCE_DIR}/driver_library/src/ethosu.cpp
+    )
+  elseif(EXECUTORCH_BUILD_ARM_ETHOSU_IMX)
+    target_sources(
+      executorch_delegate_ethos_u
+      PRIVATE ${EXECUTORCH_ROOT}/backends/arm/runtime/EthosUBackend_iMX.cpp
+    )
+
+    set(_ethosu_imx_driver_cpp
+        "${ETHOSU_IMX_DRIVER_SOURCE_DIR}/driver_library/src/ethosu.cpp"
+    )
+    set(_ethosu_imx_flat_cpp "${ETHOSU_IMX_DRIVER_SOURCE_DIR}/ethosu.cpp")
+    if(NOT ETHOSU_IMX_DRIVER_SOURCE_DIR
+       OR (NOT EXISTS "${_ethosu_imx_driver_cpp}"
+           AND NOT EXISTS "${_ethosu_imx_flat_cpp}")
+    )
+      include(FetchContent)
+      FetchContent_Declare(
+        ethosu_imx_driver_src
+        GIT_REPOSITORY ${ETHOSU_IMX_DRIVER_GIT_REPO}
+        GIT_TAG ${ETHOSU_IMX_DRIVER_GIT_TAG}
+        GIT_SHALLOW TRUE
+      )
+      FetchContent_GetProperties(ethosu_imx_driver_src)
+      if(NOT ethosu_imx_driver_src_POPULATED)
+        FetchContent_Populate(ethosu_imx_driver_src)
+      endif()
+      set(ETHOSU_IMX_DRIVER_SOURCE_DIR ${ethosu_imx_driver_src_SOURCE_DIR})
+      set(_ethosu_imx_driver_cpp
+          "${ETHOSU_IMX_DRIVER_SOURCE_DIR}/driver_library/src/ethosu.cpp"
+      )
+      set(_ethosu_imx_flat_cpp "${ETHOSU_IMX_DRIVER_SOURCE_DIR}/ethosu.cpp")
+    endif()
+
+    if(EXISTS "${_ethosu_imx_driver_cpp}")
+      target_include_directories(
+        executorch_delegate_ethos_u
+        PRIVATE ${ETHOSU_IMX_DRIVER_SOURCE_DIR}/driver_library/include
+                ${ETHOSU_IMX_DRIVER_SOURCE_DIR}/kernel_driver/include
+      )
+      target_sources(
+        executorch_delegate_ethos_u PRIVATE ${_ethosu_imx_driver_cpp}
+      )
+      set(_ethosu_imx_source "${_ethosu_imx_driver_cpp}")
+      set(_ethosu_imx_compile_options -Wno-error -include cstdint)
+    elseif(EXISTS "${_ethosu_imx_flat_cpp}")
+      target_include_directories(
+        executorch_delegate_ethos_u
+        PRIVATE ${ETHOSU_IMX_DRIVER_SOURCE_DIR}
+                ${ETHOSU_IMX_DRIVER_SOURCE_DIR}/uapi
+      )
+      target_sources(
+        executorch_delegate_ethos_u PRIVATE ${_ethosu_imx_flat_cpp}
+      )
+      set(_ethosu_imx_source "${_ethosu_imx_flat_cpp}")
+      set(_ethosu_imx_compile_options -Wno-error)
+    else()
+      message(
+        FATAL_ERROR
+          "ETHOSU_IMX_DRIVER_SOURCE_DIR does not contain a supported driver layout."
+      )
+    endif()
+
+    set_source_files_properties(
+      ${_ethosu_imx_source}
+      PROPERTIES COMPILE_OPTIONS "${_ethosu_imx_compile_options}"
     )
   endif()
 

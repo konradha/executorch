@@ -299,6 +299,31 @@ def quantize(
     return m
 
 
+def convert_to_channels_last_4d(value):
+    if isinstance(value, torch.Tensor):
+        if value.dim() == 4:
+            return value.contiguous(memory_format=torch.channels_last)
+        return value
+    if isinstance(value, tuple):
+        return tuple(convert_to_channels_last_4d(item) for item in value)
+    if isinstance(value, list):
+        return [convert_to_channels_last_4d(item) for item in value]
+    return value
+
+
+def prepare_model_and_inputs_for_export(
+    model: torch.nn.Module,
+    example_inputs: Any,
+    channels_last_4d: bool,
+) -> tuple[torch.nn.Module, Any]:
+    if not channels_last_4d:
+        return model, example_inputs
+    return (
+        model.to(memory_format=torch.channels_last),
+        convert_to_channels_last_4d(example_inputs),
+    )
+
+
 class QuantAddTest(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -610,6 +635,13 @@ def get_args():
         help="Disable strict checking while exporting models.",
     )
     parser.add_argument(
+        "--channels_last_4d",
+        action="store_true",
+        required=False,
+        default=False,
+        help="Convert rank-4 model parameters and example inputs to channels-last before export.",
+    )
+    parser.add_argument(
         "--enable_qdq_fusion_pass",
         action="store_true",
         help="[DEPRECATED] This flag is no longer used and will be removed in a future release.",
@@ -745,6 +777,11 @@ def quantize_model(
     example_inputs: Tuple[torch.Tensor],
     compile_spec,
 ) -> Tuple[GraphModule, ExportedProgram]:
+    model, example_inputs = prepare_model_and_inputs_for_export(
+        model,
+        example_inputs,
+        args.channels_last_4d,
+    )
 
     is_int16x8 = True if args.target == "TOSA-1.0+INT+int16" else False
     model_quant = quantize(
@@ -921,6 +958,11 @@ if __name__ == "__main__":  # noqa: C901
         args.model_name, args.model_input
     )
     model = original_model.eval()
+    model, example_inputs = prepare_model_and_inputs_for_export(
+        model,
+        example_inputs,
+        args.channels_last_4d,
+    )
 
     # export under the assumption we quantize, the exported form also works
     # in to_edge if we don't quantize

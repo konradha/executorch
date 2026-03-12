@@ -143,6 +143,19 @@ UNDER_DOCUMENTED_TFLITE_OPS = (
     "UNPACK",
 )
 
+ETHOS_U55_U65_GENERIC_CONSTRAINTS = (
+    "All required operator attributes must be specified.",
+    "Input and output tensors must be static and have defined shapes.",
+    "Output tensors cannot be scalar except for QUANTIZE.",
+    "Input and output tensors must be at most 4D.",
+    "Tensors must use int16, int32, int8, or uint8 except for ARG_MAX outputs.",
+    "Input, output, and weight tensors must have quantization parameters except for ARG_MAX, MIRROR_PAD, SHAPE, and TRANSPOSE.",
+    "Tensor dimensions must stay in [1, 65535].",
+    "Per-axis quantization is only supported for CONV_2D, DEPTHWISE_CONV_2D, FULLY_CONNECTED, and TRANSPOSE_CONV.",
+    "IFM batch size must be 1 except for FULLY_CONNECTED, RESHAPE, SHAPE, SLICE, SOFTMAX, SPLIT, SPLIT_V, SQUEEZE, STRIDED_SLICE, and UNPACK.",
+    "Fused activations are limited to LOGISTIC, RELU, RELU6, RELU_0_TO_1, RELU_N1_TO_1, and TANH.",
+)
+
 ARM_TFLITE_CONSTRAINT_HINTS = {
     "argmax": "Depth-axis only; IFM depth must stay <= 127; output must be int32/int64.",
     "cat": "Concat axis must be valid and all non-concat dimensions must match.",
@@ -161,6 +174,173 @@ ARM_TFLITE_CONSTRAINT_HINTS = {
     "unpack": "Generic Ethos-U55/U65 tensor and quantization constraints apply.",
 }
 
+IMX93_FASTPATH_MATRIX = {
+    "argmax": {
+        "tflite_op": "ARG_MAX",
+        "official_constraints": (
+            "IFM must be int8 or uint8.",
+            "OFM must be int32 or int64.",
+            "Reduction must run along the depth axis.",
+            "IFM depth must be <= 127.",
+        ),
+        "observed_status": "correct",
+        "observed_sizes": (8, 16),
+        "observed_notes": "Exact on device with RMSE 0.",
+    },
+    "cat": {
+        "tflite_op": "CONCATENATION",
+        "official_constraints": (
+            "Axis attribute must exist.",
+            "Axis must be in [0, rank(ofm)).",
+            "All input ranks must match OFM rank.",
+            "All non-concat dimensions must match.",
+            "OFM concat dimension must equal the sum of IFM concat dimensions.",
+        ),
+        "observed_status": "correct",
+        "observed_sizes": (8, 16, 32),
+        "observed_notes": "Delegates and runs on device.",
+    },
+    "depthwise_conv2d": {
+        "tflite_op": "DEPTHWISE_CONV_2D",
+        "official_constraints": (
+            "Stride and dilation values must be integer typed.",
+            "Dilated kernel height must be in [1, 64].",
+            "Dilated kernel area must be in [1, 4096].",
+            "Weights must be constant 8-bit tensors.",
+            "Sum of weights must not exceed 8323072.",
+            "Optional bias must be 1D int32 or int64 with values fitting in 40 bits.",
+            "Stride width and height must each be between 1 and 3.",
+            "For depth_multiplier > 1, IFM channels must be 1 and OFM channels must equal the depth multiplier.",
+        ),
+        "observed_status": "correctness_issue",
+        "observed_sizes": (8, 16, 32),
+        "observed_notes": "Delegates and runs, but size-16 output still shows device-side numerical mismatch while quantized host and delegated TOSA reference match exactly.",
+    },
+    "logistic": {
+        "tflite_op": "LOGISTIC",
+        "official_constraints": ETHOS_U55_U65_GENERIC_CONSTRAINTS,
+        "observed_status": "correct",
+        "observed_sizes": (8, 16, 32),
+        "observed_notes": "Delegates and runs on device.",
+    },
+    "pad": {
+        "tflite_op": "PAD",
+        "official_constraints": (
+            "Exactly 2 inputs are required.",
+            "Padding tensor must be constant.",
+            "Padding tensor must have shape [3,2] or [4,2].",
+            "Padding tensor must be int32 or int64.",
+            "Padding may affect only height, width, and depth.",
+        ),
+        "observed_status": "correct",
+        "observed_sizes": (8, 16, 32),
+        "observed_notes": "Delegates and runs on device.",
+    },
+    "prelu": {
+        "tflite_op": "PRELU",
+        "official_constraints": ETHOS_U55_U65_GENERIC_CONSTRAINTS,
+        "observed_status": "correct",
+        "observed_sizes": (8, 16),
+        "observed_notes": "Exact on device with RMSE 0.",
+    },
+    "reshape": {
+        "tflite_op": "RESHAPE",
+        "official_constraints": (
+            "Input and output quantization must match.",
+            "Input and output element counts must match.",
+            "Target shape must be constant.",
+        ),
+        "observed_status": "correct",
+        "observed_sizes": (8, 16, 32),
+        "observed_notes": "Delegates and runs on device.",
+    },
+    "resize_bilinear": {
+        "tflite_op": "RESIZE_BILINEAR",
+        "official_constraints": (
+            "IFM/OFM width and height must either match, be 1, or scale by 1x/2x/4x/8x under the align_corners rules.",
+            "Size tensor must match the OFM shape.",
+            "align_corners and half_pixel_centers cannot both be True.",
+            "For half_pixel_centers, IFM width and height must be 1 or OFM must be exactly 2x IFM.",
+        ),
+        "observed_status": "export_failed",
+        "observed_sizes": (8, 16),
+        "observed_notes": "Current i.MX93 export path fails inside Vela/regor before device execution.",
+    },
+    "resize_nearest_neighbor": {
+        "tflite_op": "RESIZE_NEAREST_NEIGHBOR",
+        "official_constraints": (
+            "IFM/OFM width and height must either match, be 1, or scale by 1x/2x/4x/8x under the align_corners rules.",
+            "Size tensor must match the OFM shape.",
+            "align_corners and half_pixel_centers cannot both be True.",
+        ),
+        "observed_status": "export_failed",
+        "observed_sizes": (8, 16),
+        "observed_notes": "Current i.MX93 export path fails inside Vela/regor before device execution.",
+    },
+    "slice": {
+        "tflite_op": "SLICE",
+        "official_constraints": (
+            "Begin and size tensors must be constant.",
+        ),
+        "observed_status": "correct",
+        "observed_sizes": (8, 16, 32),
+        "observed_notes": "Delegates and runs on device.",
+    },
+    "split": {
+        "tflite_op": "SPLIT",
+        "official_constraints": (
+            "Axis must be in [-rank(ifm), rank(ifm)).",
+            "Axis must be divisible by the number of splits.",
+        ),
+        "observed_status": "correct",
+        "observed_sizes": (8, 16, 32),
+        "observed_notes": "Delegates and runs on device.",
+    },
+    "squeeze": {
+        "tflite_op": "SQUEEZE",
+        "official_constraints": (
+            "Input and output quantization must match.",
+            "Input and output element counts must match.",
+        ),
+        "observed_status": "correct",
+        "observed_sizes": (8, 16, 32),
+        "observed_notes": "Delegates and runs on device.",
+    },
+    "strided_slice": {
+        "tflite_op": "STRIDED_SLICE",
+        "official_constraints": (
+            "Exactly 4 input tensors are required.",
+            "Begin, end, and stride tensors must be constant.",
+            "ellipsis_mask must be 0.",
+            "new_axis_mask and shrink_axis_mask cannot both be set.",
+            "Slice end values must exceed begin values.",
+            "Batch and channel strides must be 1.",
+            "Offset attribute must be False.",
+        ),
+        "observed_status": "correct",
+        "observed_sizes": (8, 16, 32),
+        "observed_notes": "Delegates and runs on device.",
+    },
+    "transpose": {
+        "tflite_op": "TRANSPOSE",
+        "official_constraints": (
+            "Permutation tensor must be constant 1D with rank(ifm) elements.",
+            "Permutation values must be in [0, rank(ifm)).",
+            "Only a small set of rank-2/3/4 permutations are supported on U55/U65.",
+        ),
+        "observed_status": "correct",
+        "observed_sizes": (8, 16, 32),
+        "observed_notes": "Delegates and runs on device for the exercised permutation.",
+    },
+    "unpack": {
+        "tflite_op": "UNPACK",
+        "official_constraints": ETHOS_U55_U65_GENERIC_CONSTRAINTS,
+        "observed_status": "runtime_failed",
+        "observed_sizes": (8, 16),
+        "observed_notes": "Delegates, but device execution currently fails with IOCTL failure.",
+    },
+}
+
 
 def summarize_ops() -> dict[str, int]:
     int_ops = sum(len(ops) for ops in ETHOS_U65_INT_OPS.values())
@@ -173,6 +353,7 @@ def summarize_ops() -> dict[str, int]:
         "models": len(MODEL_DELEGATION),
         "under_documented_tflite_ops": len(UNDER_DOCUMENTED_TFLITE_OPS),
         "benchmark_hints": len(ARM_TFLITE_CONSTRAINT_HINTS),
+        "fastpath_matrix": len(IMX93_FASTPATH_MATRIX),
     }
 
 
@@ -203,6 +384,13 @@ def print_ops() -> None:
     print("\n[under-documented-tflite]")
     for op in UNDER_DOCUMENTED_TFLITE_OPS:
         print(f"  {op}")
+    print("\n[imx93-fastpath-matrix]")
+    for op_name, row in IMX93_FASTPATH_MATRIX.items():
+        print(
+            f"  {op_name}: {row['observed_status']} "
+            f"sizes={row['observed_sizes']} "
+            f"op={row['tflite_op']}"
+        )
 
 
 if __name__ == "__main__":

@@ -465,7 +465,7 @@ int main(int argc, char** argv) {
     } else
 #endif
     {
-      ET_LOG(Debug, "Preparing inputs.");
+      ET_LOG(Info, "Preparing inputs for execution %" PRIu32 ".", i + 1);
       auto res = executorch::extension::prepare_input_tensors(
           *method, {}, input_buffers);
       ET_CHECK_MSG(
@@ -473,15 +473,21 @@ int main(int argc, char** argv) {
           "Could not prepare inputs: 0x%" PRIx32,
           (uint32_t)res.error());
       inputs.emplace(std::move(res.get()));
-      ET_LOG(Debug, "Inputs prepared.");
+      ET_LOG(Info, "Inputs ready for execution %" PRIu32 ".", i + 1);
     }
 
     const et_timestamp_t before_execute =
         executorch::runtime::pal_current_ticks();
+    ET_LOG(Info, "Starting execution %" PRIu32 ".", i + 1);
     Error status = method->execute();
     const et_timestamp_t after_execute =
         executorch::runtime::pal_current_ticks();
     time_spent_executing += after_execute - before_execute;
+    ET_LOG(
+        Info,
+        "Execution %" PRIu32 " returned status 0x%" PRIx32 ".",
+        i + 1,
+        static_cast<uint32_t>(status));
     ET_CHECK_MSG(
         status == Error::Ok,
         "Execution of method %s failed with status 0x%" PRIx32,

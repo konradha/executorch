@@ -212,9 +212,9 @@ IMX93_FASTPATH_MATRIX = {
             "Stride width and height must each be between 1 and 3.",
             "For depth_multiplier > 1, IFM channels must be 1 and OFM channels must equal the depth multiplier.",
         ),
-        "observed_status": "correctness_issue",
+        "observed_status": "correct",
         "observed_sizes": (8, 16, 32),
-        "observed_notes": "Delegates and runs, but size-16 output still shows device-side numerical mismatch while quantized host and delegated TOSA reference match exactly.",
+        "observed_notes": "Delegates and runs correctly when exported with channels-last 4D tensors and compared using raw tensor storage layout.",
     },
     "logistic": {
         "tflite_op": "LOGISTIC",

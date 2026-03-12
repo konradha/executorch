@@ -9,6 +9,7 @@
  * DMA buffer and uses a single shared arena for I/O and scratch.
  */
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -36,6 +37,7 @@ namespace backends {
 namespace arm {
 
 constexpr int64_t kDefaultTimeoutNs = 60000000000LL;
+constexpr size_t kArenaDataAlignment = 64;
 
 struct LinuxDriverOptions {
   std::string device_path = "/dev/ethosu0";
@@ -48,9 +50,14 @@ struct PlatformState {
   LinuxDriverOptions options;
   std::shared_ptr<EthosU::Network> network;
   std::shared_ptr<EthosU::Buffer> arena;
+  EthosU::MemoryLayout layout{};
 };
 
 namespace {
+
+size_t align_up(size_t value, size_t alignment) {
+  return (value + alignment - 1) & ~(alignment - 1);
+}
 
 template <typename T>
 bool read_scalar_value(const CompileSpec& spec, T* out) {
@@ -197,32 +204,50 @@ Error platform_execute(
       EthosU::Device& device =
           get_device_cache().get(state->options.device_path);
 
-      auto model_buf = std::make_shared<EthosU::Buffer>(
-          device, handles.vela_model_size);
+      auto model_buf =
+          std::make_shared<EthosU::Buffer>(device, handles.vela_model_size);
       model_buf->resize(handles.vela_model_size);
       std::memcpy(
           model_buf->data(), handles.vela_model_data, handles.vela_model_size);
       state->network = std::make_shared<EthosU::Network>(device, model_buf);
 
-      size_t arena_capacity = handles.scratch_data_size;
-      size_t n_ifm = state->network->getInputCount();
-      size_t n_ofm = state->network->getOutputCount();
-      for (size_t i = 0; i < n_ifm; i++) {
-        size_t extent = static_cast<size_t>(
-            state->network->getInputDataOffset(i)) +
-            state->network->getIfmDims()[i];
-        if (extent > arena_capacity) {
-          arena_capacity = extent;
+      size_t max_io_extent = 0;
+      state->layout = {};
+      state->layout.input_count = static_cast<uint32_t>(input_count);
+      for (int i = 0; i < input_count; ++i) {
+        const int32_t offset = state->network->getInputDataOffset(i);
+        const size_t size = state->network->getIfmDims()[i];
+        if (offset < 0) {
+          ET_LOG(
+              Error,
+              "Ethos-U i.MX backend does not support separate IO regions");
+          return Error::InvalidProgram;
         }
+        state->layout.input_offset[i] = static_cast<uint32_t>(offset);
+        state->layout.input_size[i] = static_cast<uint32_t>(size);
+        max_io_extent = std::max(
+            max_io_extent, static_cast<size_t>(offset) + size);
       }
-      for (size_t i = 0; i < n_ofm; i++) {
-        size_t extent = static_cast<size_t>(
-            state->network->getOutputDataOffset(i)) +
-            state->network->getOfmDims()[i];
-        if (extent > arena_capacity) {
-          arena_capacity = extent;
+      state->layout.output_count = static_cast<uint32_t>(output_count);
+      for (int i = 0; i < output_count; ++i) {
+        const int32_t offset = state->network->getOutputDataOffset(i);
+        const size_t size = state->network->getOfmDims()[i];
+        if (offset < 0) {
+          ET_LOG(
+              Error,
+              "Ethos-U i.MX backend does not support separate IO regions");
+          return Error::InvalidProgram;
         }
+        state->layout.output_offset[i] = static_cast<uint32_t>(offset);
+        state->layout.output_size[i] = static_cast<uint32_t>(size);
+        max_io_extent = std::max(
+            max_io_extent, static_cast<size_t>(offset) + size);
       }
+      state->layout.arena_offset =
+          static_cast<uint32_t>(align_up(max_io_extent, kArenaDataAlignment));
+
+      size_t arena_capacity = static_cast<size_t>(state->layout.arena_offset) +
+          static_cast<size_t>(handles.scratch_data_size);
       if (arena_capacity < (1u << 20)) {
         arena_capacity = 1u << 20;
       }
@@ -231,48 +256,49 @@ Error platform_execute(
         arena_capacity = kMinArenaMB;
       }
       arena_capacity = (arena_capacity + ((1u << 20) - 1)) & ~((1u << 20) - 1);
+
       ET_LOG(
           Info,
-          "Ethos-U arena: scratch=%zu, computed=%zu, ifm=%zu, ofm=%zu",
+          "Ethos-U arena: scratch=%zu, io=%zu, arena_offset=%u, computed=%zu, ifm=%d, ofm=%d",
           static_cast<size_t>(handles.scratch_data_size),
+          max_io_extent,
+          static_cast<unsigned>(state->layout.arena_offset),
           arena_capacity,
-          n_ifm,
-          n_ofm);
-      state->arena =
-          std::make_shared<EthosU::Buffer>(device, arena_capacity);
+          input_count,
+          output_count);
+      state->arena = std::make_shared<EthosU::Buffer>(device, arena_capacity);
       state->arena->resize(arena_capacity);
+    }
+
+    if (handles.outputs == nullptr) {
+      ET_LOG(Error, "Ethos-U backend missing output metadata");
+      return Error::InvalidProgram;
     }
 
     for (int i = 0; i < input_count; i++) {
       auto tensor = args[i]->toTensor();
-      int32_t offset = state->network->getInputDataOffset(i);
+      uint32_t offset = state->layout.input_offset[i];
       size_t ifm_size = state->network->getIfmDims()[i];
       ET_LOG(
           Info,
-          "  IFM[%d]: offset=%d, driver_size=%zu, tensor_bytes=%zu",
-          i, offset, ifm_size, static_cast<size_t>(tensor.nbytes()));
+          "  IFM[%d]: offset=%u, driver_size=%zu, tensor_bytes=%zu",
+          i,
+          static_cast<unsigned>(offset),
+          ifm_size,
+          static_cast<size_t>(tensor.nbytes()));
       std::memcpy(
           state->arena->data() + offset,
           tensor.const_data_ptr<char>(),
           tensor.nbytes());
     }
 
-    EthosU::MemoryLayout layout = {};
-    layout.input_count = static_cast<uint32_t>(input_count);
-    for (int i = 0; i < input_count; i++) {
-      layout.input_offset[i] = state->network->getInputDataOffset(i);
-      layout.input_size[i] = state->network->getIfmDims()[i];
-    }
-    layout.output_count = static_cast<uint32_t>(output_count);
     for (int i = 0; i < output_count; i++) {
-      layout.output_offset[i] = state->network->getOutputDataOffset(i);
-      layout.output_size[i] = state->network->getOfmDims()[i];
       ET_LOG(
           Info,
           "  OFM[%d]: offset=%u, driver_size=%u",
           i,
-          static_cast<unsigned>(layout.output_offset[i]),
-          static_cast<unsigned>(layout.output_size[i]));
+          static_cast<unsigned>(state->layout.output_offset[i]),
+          static_cast<unsigned>(state->layout.output_size[i]));
     }
 
     auto inference = std::make_shared<EthosU::Inference>(
@@ -280,7 +306,7 @@ Error platform_execute(
         state->arena,
         state->options.pmu_events,
         state->options.enable_cycle_counter,
-        layout);
+        state->layout);
     ET_LOG(Info, "Ethos-U i.MX inference object created");
 
     ET_LOG(Info, "Ethos-U i.MX invoking driver");
@@ -316,15 +342,10 @@ Error platform_execute(
       }
     }
 
-    if (handles.outputs == nullptr) {
-      ET_LOG(Error, "Ethos-U backend missing output metadata");
-      return Error::InvalidProgram;
-    }
-
     ET_LOG(Info, "Ethos-U i.MX copying outputs");
     for (int i = 0; i < output_count; i++) {
       auto tensor_out = args[input_count + i]->toTensor();
-      int32_t offset = state->network->getOutputDataOffset(i);
+      uint32_t offset = state->layout.output_offset[i];
       const char* output_addr = state->arena->data() + offset;
 
       int tensor_count = 1, io_count = 1;
@@ -345,7 +366,6 @@ Error platform_execute(
             tensor_out.mutable_data_ptr<char>(), output_addr, tensor_bytes);
       }
     }
-
   } catch (const std::exception& e) {
     ET_LOG(Error, "Ethos-U i.MX driver failed: %s", e.what());
     return Error::InvalidState;

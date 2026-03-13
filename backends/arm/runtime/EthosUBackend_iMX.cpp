@@ -201,15 +201,22 @@ Error platform_execute(
 
   try {
     if (!state->network) {
+      ET_LOG(Info, "Ethos-U i.MX acquiring device");
       EthosU::Device& device =
           get_device_cache().get(state->options.device_path);
+      ET_LOG(Info, "Ethos-U i.MX device ready");
 
       auto model_buf =
           std::make_shared<EthosU::Buffer>(device, handles.vela_model_size);
       model_buf->resize(handles.vela_model_size);
       std::memcpy(
           model_buf->data(), handles.vela_model_data, handles.vela_model_size);
+      ET_LOG(
+          Info,
+          "Ethos-U i.MX model buffer staged: %zu bytes",
+          static_cast<size_t>(handles.vela_model_size));
       state->network = std::make_shared<EthosU::Network>(device, model_buf);
+      ET_LOG(Info, "Ethos-U i.MX network created");
 
       size_t max_io_extent = 0;
       state->layout = {};

@@ -17,7 +17,11 @@ from pathlib import Path
 
 # Add Executorch root to path so this script can be run from anywhere
 _EXECUTORCH_DIR = Path(__file__).resolve().parents[2]
+_EXECUTORCH_SRC_DIR = _EXECUTORCH_DIR / "src"
+_EXECUTORCH_SRC_DIR_STR = str(_EXECUTORCH_SRC_DIR)
 _EXECUTORCH_DIR_STR = str(_EXECUTORCH_DIR)
+if _EXECUTORCH_SRC_DIR_STR not in sys.path:
+    sys.path.insert(0, _EXECUTORCH_SRC_DIR_STR)
 if _EXECUTORCH_DIR_STR not in sys.path:
     sys.path.insert(0, _EXECUTORCH_DIR_STR)
 

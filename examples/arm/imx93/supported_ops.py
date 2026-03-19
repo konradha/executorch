@@ -116,14 +116,28 @@ ETHOS_U65_FP_EXTRA_OPS = {
 }
 
 MODEL_DELEGATION = {
-    "MobileNetV2": "100% NPU (3.5M params, ~3.3MB PTE)",
-    "MobileNetV3": "100% NPU (2.5M params, ~2.4MB PTE)",
-    "ResNet-18": "100% NPU (11.7M params, ~10MB PTE)",
-    "ResNet-50": "100% NPU (25.6M params, ~22MB PTE)",
-    "InceptionV3": "100% NPU (27.2M params, ~21MB PTE)",
+    "MobileNetV2": "verified: top-1 match, cosine 0.989, 45ms (3.5M params, ~6.7MB PTE)",
+    "MobileNetV3": "BROKEN: NXP firmware IOCTL failure on HardSwish multi-input segment",
+    "ResNet-18": "verified: top-1 match, cosine 0.999, 66ms (11.7M params, ~20MB PTE)",
+    "ResNet-50": "verified: top-1 match, cosine 0.999, 158ms (25.6M params, ~44MB PTE)",
+    "InceptionV3": "verified: top-1 match, cosine 0.987, 79ms (27.2M params, ~42MB PTE)",
     "ViT": "Fails Vela compilation (attention/LayerNorm issues)",
     "DeiT-Tiny": "Requires timm package",
 }
+
+MODEL_PROVEN_CORE_OPS = (
+    "aten_convolution_default",
+    "aten_add_tensor",
+    "aten_relu_default",
+    "aten_hardtanh_default",
+    "aten_linear_default",
+    "aten_mean_dim",
+    "aten_view_copy_default",
+    "dim_order_ops__clone_dim_order_default",
+    "quantized_decomposed_dequantize_per_channel_default",
+    "quantized_decomposed_dequantize_per_tensor_default",
+    "quantized_decomposed_quantize_per_tensor_default",
+)
 
 UNDER_DOCUMENTED_TFLITE_OPS = (
     "ARG_MAX",
@@ -177,6 +191,8 @@ ARM_TFLITE_CONSTRAINT_HINTS = {
 IMX93_FASTPATH_MATRIX = {
     "argmax": {
         "tflite_op": "ARG_MAX",
+        "delegated_payload": False,
+        "gap_layer": "executorch_lowering",
         "official_constraints": (
             "IFM must be int8 or uint8.",
             "OFM must be int32 or int64.",
@@ -185,10 +201,13 @@ IMX93_FASTPATH_MATRIX = {
         ),
         "observed_status": "not_delegated",
         "observed_sizes": (8, 16),
-        "observed_notes": "Current fastpath export does not emit a vela_model block for this case; exact device results are from the CPU path.",
+        "model_guidance": "Keep argmax outside the delegated region on i.MX93.",
+        "observed_notes": "Even with valid depth-axis and last-dimension cases, the current fastpath export does not emit a vela_model block. The Arm backend carries the int64-to-int32 cleanup pass for argmax outputs, and the stable-diffusion partitioner tests still count argmax as a leftover op after partitioning, so there is no delegated payload on the i.MX93 Linux path today.",
     },
     "cat": {
         "tflite_op": "CONCATENATION",
+        "delegated_payload": True,
+        "gap_layer": "none",
         "official_constraints": (
             "Axis attribute must exist.",
             "Axis must be in [0, rank(ofm)).",
@@ -198,10 +217,13 @@ IMX93_FASTPATH_MATRIX = {
         ),
         "observed_status": "correct",
         "observed_sizes": (16,),
+        "model_guidance": "Safe delegated building block. Export with NCHW (default).",
         "observed_notes": "Delegates and runs correctly when exported with channels-last 4D tensors and compared using raw tensor storage layout; the size-16 spot check landed at RMSE about 0.0025.",
     },
     "depthwise_conv2d": {
         "tflite_op": "DEPTHWISE_CONV_2D",
+        "delegated_payload": True,
+        "gap_layer": "none",
         "official_constraints": (
             "Stride and dilation values must be integer typed.",
             "Dilated kernel height must be in [1, 64].",
@@ -214,17 +236,23 @@ IMX93_FASTPATH_MATRIX = {
         ),
         "observed_status": "correct",
         "observed_sizes": (16,),
+        "model_guidance": "Safe delegated building block. Export with NCHW (default).",
         "observed_notes": "Delegates and runs correctly when exported with channels-last 4D tensors and compared using raw tensor storage layout; the size-16 spot check landed at RMSE about 0.0011.",
     },
     "logistic": {
         "tflite_op": "LOGISTIC",
+        "delegated_payload": True,
+        "gap_layer": "none",
         "official_constraints": ETHOS_U55_U65_GENERIC_CONSTRAINTS,
         "observed_status": "correct",
         "observed_sizes": (16,),
+        "model_guidance": "Safe delegated building block. Export with NCHW (default).",
         "observed_notes": "Delegates and runs correctly when exported with channels-last 4D tensors and compared using raw tensor storage layout; the size-16 spot check landed at RMSE about 0.0019.",
     },
     "pad": {
         "tflite_op": "PAD",
+        "delegated_payload": True,
+        "gap_layer": "none",
         "official_constraints": (
             "Exactly 2 inputs are required.",
             "Padding tensor must be constant.",
@@ -234,28 +262,37 @@ IMX93_FASTPATH_MATRIX = {
         ),
         "observed_status": "correct",
         "observed_sizes": (16,),
+        "model_guidance": "Safe delegated building block. Export with NCHW (default).",
         "observed_notes": "Delegates and runs on device; use channels-last 4D export for correct tensor storage ordering.",
     },
     "prelu": {
         "tflite_op": "PRELU",
+        "delegated_payload": False,
+        "gap_layer": "executorch_lowering",
         "official_constraints": ETHOS_U55_U65_GENERIC_CONSTRAINTS,
         "observed_status": "not_delegated",
         "observed_sizes": (8, 16),
-        "observed_notes": "Current fastpath export does not emit a vela_model block for this case; exact device results are from the CPU path.",
+        "model_guidance": "Do not rely on delegated prelu on i.MX93; use a different activation or allow CPU fallback.",
+        "observed_notes": "Current fastpath export does not emit a vela_model block for this case. There is no dedicated prelu lowering or operator-support wiring under backends/arm on this path, so device results are CPU-path only.",
     },
     "reshape": {
         "tflite_op": "RESHAPE",
+        "delegated_payload": False,
+        "gap_layer": "metadata_only",
         "official_constraints": (
             "Input and output quantization must match.",
             "Input and output element counts must match.",
             "Target shape must be constant.",
         ),
-        "observed_status": "not_delegated",
+        "observed_status": "metadata_only",
         "observed_sizes": (8, 16, 32),
-        "observed_notes": "Current fastpath export does not emit a vela_model block for this case, so device results are from the CPU path.",
+        "model_guidance": "Treat reshape as bookkeeping, not as a delegated compute op to benchmark.",
+        "observed_notes": "The standalone reshape case does not emit a vela_model block. On this fastpath it behaves like a zero-runtime metadata/view operation rather than a delegated NPU workload.",
     },
     "resize_bilinear": {
         "tflite_op": "RESIZE_BILINEAR",
+        "delegated_payload": False,
+        "gap_layer": "vela_compile",
         "official_constraints": (
             "IFM/OFM width and height must either match, be 1, or scale by 1x/2x/4x/8x under the align_corners rules.",
             "Size tensor must match the OFM shape.",
@@ -264,50 +301,65 @@ IMX93_FASTPATH_MATRIX = {
         ),
         "observed_status": "export_failed",
         "observed_sizes": (8, 16),
-        "observed_notes": "Current i.MX93 export path fails inside Vela/regor before device execution.",
+        "model_guidance": "Avoid delegated bilinear resize on i.MX93 until the Vela U65 export path is resolved.",
+        "observed_notes": "Current i.MX93/U65 export fails inside Vela/regor before device execution. The failure reproduces across UpsamplingBilinear2d, Upsample(..., mode='bilinear', align_corners=True), and interpolate(..., mode='bilinear', align_corners=True) variants, while in-tree hardware tests only cover U85 delegation and explicitly mark U55 as not delegated.",
     },
     "resize_nearest_neighbor": {
         "tflite_op": "RESIZE_NEAREST_NEIGHBOR",
+        "delegated_payload": True,
+        "gap_layer": "none",
         "official_constraints": (
             "IFM/OFM width and height must either match, be 1, or scale by 1x/2x/4x/8x under the align_corners rules.",
             "Size tensor must match the OFM shape.",
             "align_corners and half_pixel_centers cannot both be True.",
         ),
-        "observed_status": "export_failed",
+        "observed_status": "correct",
         "observed_sizes": (8, 16),
-        "observed_notes": "Current i.MX93 export path fails inside Vela/regor before device execution.",
+        "model_guidance": "Safe delegated resize path for 2x-style cases that satisfy the documented scale constraints.",
+        "observed_notes": "Delegates and runs correctly on device. The rewritten size-16 case is exact against the delegated TOSA reference (RMSE 0).",
     },
     "slice": {
         "tflite_op": "SLICE",
+        "delegated_payload": True,
+        "gap_layer": "none",
         "official_constraints": (
             "Begin and size tensors must be constant.",
         ),
         "observed_status": "correct",
         "observed_sizes": (16,),
+        "model_guidance": "Safe delegated building block. Export with NCHW (default).",
         "observed_notes": "Delegates and runs on device; use channels-last 4D export for correct tensor storage ordering.",
     },
     "split": {
         "tflite_op": "SPLIT",
+        "delegated_payload": True,
+        "gap_layer": "none",
         "official_constraints": (
             "Axis must be in [-rank(ifm), rank(ifm)).",
             "Axis must be divisible by the number of splits.",
         ),
         "observed_status": "correct",
         "observed_sizes": (16,),
+        "model_guidance": "Safe delegated multi-output building block. Export with NCHW (default).",
         "observed_notes": "Delegates and runs correctly when exported with channels-last 4D tensors and compared using raw tensor storage layout; the size-16 spot check landed at RMSE about 0.0012 across both outputs.",
     },
     "squeeze": {
         "tflite_op": "SQUEEZE",
+        "delegated_payload": True,
+        "gap_layer": "none",
         "official_constraints": (
             "Input and output quantization must match.",
             "Input and output element counts must match.",
         ),
         "observed_status": "correct",
         "observed_sizes": (16,),
+        "model_guidance": "Safe delegated bookkeeping op when it stays inside an otherwise delegated region.",
         "observed_notes": "Delegates and runs on device; use channels-last 4D export for correct tensor storage ordering.",
     },
     "strided_slice": {
         "tflite_op": "STRIDED_SLICE",
+        "delegated_payload": True,
+        "gap_layer": "imx_runtime",
         "official_constraints": (
             "Exactly 4 input tensors are required.",
             "Begin, end, and stride tensors must be constant.",
@@ -317,12 +369,15 @@ IMX93_FASTPATH_MATRIX = {
             "Batch and channel strides must be 1.",
             "Offset attribute must be False.",
         ),
-        "observed_status": "runtime_failed",
+        "observed_status": "unsafe_for_inference",
         "observed_sizes": (16,),
-        "observed_notes": "Delegates, but current device execution hangs and leaves the remoteproc path needing a restart.",
+        "model_guidance": "Avoid delegated strided_slice on i.MX93 until the runtime hang is understood.",
+        "observed_notes": "Delegates, but current device execution is not inference-safe on i.MX93. A simpler upstream-style 2D step-3 case completes and still returns obviously wrong values, while the earlier 4D case was numerically wrong and a simplified 3D single-axis case hangs the Linux fastpath before writing outputs.",
     },
     "transpose": {
         "tflite_op": "TRANSPOSE",
+        "delegated_payload": True,
+        "gap_layer": "none",
         "official_constraints": (
             "Permutation tensor must be constant 1D with rank(ifm) elements.",
             "Permutation values must be in [0, rank(ifm)).",
@@ -330,16 +385,36 @@ IMX93_FASTPATH_MATRIX = {
         ),
         "observed_status": "correct",
         "observed_sizes": (16,),
+        "model_guidance": "Safe delegated op for the documented U55/U65 permutation set.",
         "observed_notes": "Delegates and runs on device for the exercised permutation; channels-last 4D export keeps tensor storage aligned with the driver.",
     },
     "unpack": {
         "tflite_op": "UNPACK",
+        "delegated_payload": True,
+        "gap_layer": "imx_runtime",
         "official_constraints": ETHOS_U55_U65_GENERIC_CONSTRAINTS,
-        "observed_status": "runtime_failed",
+        "observed_status": "unsafe_for_inference",
         "observed_sizes": (8, 16),
-        "observed_notes": "Delegates, but device execution currently fails with IOCTL failure.",
+        "model_guidance": "Do not rely on delegated unpack outputs on i.MX93 until the runtime numerical mismatch is resolved.",
+        "observed_notes": "Delegates, but the current i.MX93 Linux fastpath is not inference-safe for unpack. An upstream-style 3D dim-0 case fails in the NXP driver with IOCTL failure, while upstream-style and microbench 4D dim-2 cases execute and still return numerically wrong outputs even after checking output permutations.",
     },
 }
+
+
+def trusted_delegated_ops() -> tuple[str, ...]:
+    return tuple(
+        op_name
+        for op_name, row in IMX93_FASTPATH_MATRIX.items()
+        if row["observed_status"] == "correct"
+    )
+
+
+def unresolved_ops() -> tuple[str, ...]:
+    return tuple(
+        op_name
+        for op_name, row in IMX93_FASTPATH_MATRIX.items()
+        if row["observed_status"] != "correct"
+    )
 
 
 def summarize_ops() -> dict[str, int]:
@@ -351,9 +426,12 @@ def summarize_ops() -> dict[str, int]:
         "fp_extra_categories": len(ETHOS_U65_FP_EXTRA_OPS),
         "fp_extra_ops": fp_extra_ops,
         "models": len(MODEL_DELEGATION),
+        "model_proven_core_ops": len(MODEL_PROVEN_CORE_OPS),
         "under_documented_tflite_ops": len(UNDER_DOCUMENTED_TFLITE_OPS),
         "benchmark_hints": len(ARM_TFLITE_CONSTRAINT_HINTS),
         "fastpath_matrix": len(IMX93_FASTPATH_MATRIX),
+        "trusted_delegated": len(trusted_delegated_ops()),
+        "unresolved_fastpath": len(unresolved_ops()),
     }
 
 

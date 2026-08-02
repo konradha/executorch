@@ -84,7 +84,8 @@ jobs:
   build-demo-ios:
     name: build-demo-ios
     # NB: Don't run this on fork PRs because they won't have access to the secret and would fail anyway
-    if: ${{ !github.event.pull_request.head.repo.fork }}
+    # Fork repositories also lack the Apple signing certificates; only run on the upstream repo.
+    if: ${{ !github.event.pull_request.head.repo.fork && github.repository == 'pytorch/executorch' }}
     uses: pytorch/test-infra/.github/workflows/macos_job.yml@main
     secrets: inherit
     with:
@@ -151,7 +152,8 @@ jobs:
   test-demo-ios:
     # Only PR from ExecuTorch itself has permission to access AWS, forked PRs will fail to
     # authenticate with the cloud service. So, this job will be skipped on the latter
-    if: ${{ !github.event.pull_request.head.repo.fork }}
+    # Fork repositories cannot access the upstream AWS Device Farm project either.
+    if: ${{ !github.event.pull_request.head.repo.fork && github.repository == 'pytorch/executorch' }}
     needs: upload-demo-ios
     permissions:
       id-token: write
@@ -177,7 +179,7 @@ jobs:
     uses: pytorch/test-infra/.github/workflows/macos_job.yml@main
     with:
       default-packages: ""
-      runner: macos-14-xlarge
+      runner: macos-14
       python-version: '3.11'
       submodules: 'recursive'
       ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
@@ -223,7 +225,8 @@ jobs:
 
   upload-frameworks-ios:
     # NB: Don't run this on fork PRs because they won't have access to the secret and would fail anyway
-    if: ${{ !github.event.pull_request.head.repo.fork }}
+    # Fork repositories cannot assume the upstream AWS upload role; only run on the upstream repo.
+    if: ${{ !github.event.pull_request.head.repo.fork && github.repository == 'pytorch/executorch' }}
     runs-on: ubuntu-22.04
     needs: [build-frameworks-ios, set-version]
     timeout-minutes: 30
@@ -313,7 +316,8 @@ jobs:
   build-benchmark-app:
     name: build-benchmark-app
     # NB: Don't run this on fork PRs because they won't have access to the secret and would fail anyway
-    if: ${{ !github.event.pull_request.head.repo.fork }}
+    # Fork repositories also lack the Apple signing certificates; only run on the upstream repo.
+    if: ${{ !github.event.pull_request.head.repo.fork && github.repository == 'pytorch/executorch' }}
     uses: pytorch/test-infra/.github/workflows/macos_job.yml@main
     secrets: inherit
     with:

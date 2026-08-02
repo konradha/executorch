@@ -1,12 +1,41 @@
+# Copyright 2026 Arm Limited and/or its affiliates.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 import os
 from typing import Any
 
 import pytest
 import torch
 
-from executorch.backends.test.suite.flow import all_flows
+from executorch.backends.test.suite.flow import all_flows, TestFlow
 from executorch.backends.test.suite.reporting import _sum_op_counts
 from executorch.backends.test.suite.runner import run_test
+
+
+FLOW_TEST_CASE_TIMEOUTS = {
+    "backends/test/suite/models/": 1200,
+    "backends/test/suite/operators/": 120,
+}
+
+
+def pytest_collection_modifyitems(config, items):
+    for item in items:
+        callspec = getattr(item, "callspec", None)
+        if callspec is not None:
+            flow = callspec.params.get("test_runner")
+            if isinstance(flow, TestFlow):
+                test_name = item.originalname or item.name
+                should_skip, reason = flow.should_skip_test(test_name, callspec.params)
+                if should_skip:
+                    item.add_marker(pytest.mark.skip(reason))
+
+        item_path = str(getattr(item, "path", ""))
+        for suite_prefix, timeout_s in FLOW_TEST_CASE_TIMEOUTS.items():
+            if suite_prefix in item_path:
+                item.add_marker(pytest.mark.timeout(timeout_s))
+                break
 
 
 def pytest_configure(config):
@@ -88,7 +117,8 @@ class TestRunner:
     ids=str,
 )
 def test_runner(request):
-    return TestRunner(request.param, request.node.name, request.node.originalname)
+    flow = request.param
+    return TestRunner(flow, request.node.name, request.node.originalname)
 
 
 @pytest.hookimpl(optionalhook=True)

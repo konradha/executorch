@@ -46,7 +46,6 @@
 #
 
 cmake_minimum_required(VERSION 3.24)
-project(executorch)
 
 set(EXECUTORCH_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -73,6 +72,26 @@ if("${ET_VERSION_MAJOR}" STREQUAL ""
       "Failed to parse version from ${EXECUTORCH_ROOT}/version.txt. "
       "Expected format: MAJOR.MINOR.PATCH (e.g., '1.2.0' or '1.2.0a0'), "
       "but got: '${ET_VERSION_STRING}'"
+  )
+endif()
+
+project(executorch
+        VERSION "${ET_VERSION_MAJOR}.${ET_VERSION_MINOR}.${ET_VERSION_PATCH}"
+)
+
+if(WIN32)
+  add_compile_definitions(NOMINMAX)
+endif()
+
+# Hexagon toolchain with release build complains about code in third party
+# libraries. Must come after project(), which runs the toolchain file that sets
+# CMAKE_SYSTEM_PROCESSOR, and before add_subdirectory(third-party).
+if("${CMAKE_SYSTEM_PROCESSOR}" MATCHES "Hexagon" AND "${CMAKE_BUILD_TYPE}"
+                                                     STREQUAL "Release"
+)
+  add_compile_options(
+    -Wno-error=format -Wno-error=implicit-int-conversion
+    -Wno-error=unused-variable -Wno-error=unused-function
   )
 endif()
 
@@ -142,12 +161,40 @@ if(NOT PYTHON_EXECUTABLE)
 endif()
 announce_configured_options(PYTHON_EXECUTABLE)
 
+# pybind11 >=3.0 uses find_package(Python) which looks for Python_EXECUTABLE,
+# not the legacy PYTHON_EXECUTABLE variable. Bridge the two so pybind11 picks up
+# the interpreter that setup.py (or the user) specified.
+if(PYTHON_EXECUTABLE AND NOT Python_EXECUTABLE)
+  set(Python_EXECUTABLE "${PYTHON_EXECUTABLE}")
+endif()
+
 announce_configured_options(CMAKE_CXX_COMPILER_ID)
 announce_configured_options(CMAKE_TOOLCHAIN_FILE)
 announce_configured_options(BUILD_TESTING)
 
 load_build_preset()
 include(${PROJECT_SOURCE_DIR}/tools/cmake/preset/default.cmake)
+
+# Keep bare-metal installs enabled only when ExecuTorch owns the top-level
+# build. Standalone consumers (e.g., the runner) set
+# EXECUTORCH_BAREMETAL_SKIP_INSTALL=ON but still add ExecuTorch as a subproject,
+# which cannot satisfy our install() export dependencies until their own targets
+# are configured.
+if(DEFINED EXECUTORCH_BAREMETAL_SKIP_INSTALL
+   AND EXECUTORCH_BAREMETAL_SKIP_INSTALL
+   AND NOT (CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+)
+  set(CMAKE_SKIP_INSTALL_RULES
+      ON
+      CACHE BOOL
+            "Skip install() rules when ExecuTorch is consumed as a subproject"
+            FORCE
+  )
+endif()
+
+if(EXECUTORCH_BUILD_SHARED)
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
 
 # Enable ccache if available
 find_program(CCACHE_PROGRAM ccache)
@@ -178,6 +225,9 @@ if(NOT EXECUTORCH_ENABLE_PROGRAM_VERIFICATION)
   add_definitions(-DET_ENABLE_PROGRAM_VERIFICATION=0)
 endif()
 
+# Disable the deprecated constant_buffer path.
+add_definitions(-DET_ENABLE_DEPRECATED_CONSTANT_BUFFER=0)
+
 if(EXECUTORCH_ENABLE_EVENT_TRACER)
   add_definitions(-DET_EVENT_TRACER_ENABLED)
 endif()
@@ -189,6 +239,12 @@ endif()
 if(EXECUTORCH_BUILD_CUDA)
   add_definitions(-DCUDA_AVAILABLE=1)
 endif()
+
+option(ET_ENABLE_VGF_INPUT_DUMP
+       "Enable Arm/VGF delegate-boundary input dump flags in executor_runner"
+       OFF
+)
+announce_configured_options(ET_ENABLE_VGF_INPUT_DUMP)
 
 # -ffunction-sections -fdata-sections: breaks function and data into sections so
 # they can be properly gc'd. -s: strip symbol.
@@ -220,6 +276,44 @@ else()
 endif()
 
 add_subdirectory(third-party)
+
+# On Apple, pybind11 SHARED extension modules must not link libpython directly.
+# When python_add_library creates a SHARED library, it links Python::Python (via
+# pybind11::embed) which pulls in libpython. This conflicts with pybind11
+# >=3.0's multi-phase module init — the duplicate Python runtime causes a GIL
+# state crash at import time. This function replaces pybind11::embed with
+# pybind11::module (which links Python::Module instead of Python::Python —
+# headers and ABI only, no libpython) and adds -undefined dynamic_lookup for
+# symbol resolution. No-op on non-Apple platforms.
+function(strip_python_lib target)
+  if(NOT APPLE)
+    return()
+  endif()
+  get_target_property(_libs ${target} LINK_LIBRARIES)
+  if(_libs)
+    list(REMOVE_ITEM _libs Python::Python pybind11::embed)
+    list(APPEND _libs pybind11::module)
+    set_target_properties(${target} PROPERTIES LINK_LIBRARIES "${_libs}")
+  endif()
+  target_link_options(${target} PRIVATE "LINKER:-undefined,dynamic_lookup")
+endfunction()
+
+# Size-optimized builds disable exceptions, RTTI, and unwind tables.
+# ExecuTorch's runtime uses Result<T>/Error instead of exceptions, so
+# -fno-exceptions is safe. Suppressing .eh_frame via -fno-unwind-tables is safe
+# because exceptions are disabled. Placed after add_subdirectory(third-party) to
+# avoid leaking into third-party configure checks (e.g. gflags).
+if(EXECUTORCH_OPTIMIZE_SIZE
+   AND NOT WIN32
+   AND NOT MSVC
+)
+  set(CMAKE_CXX_FLAGS_RELEASE
+      "${CMAKE_CXX_FLAGS_RELEASE} -fno-exceptions -fno-rtti -fno-asynchronous-unwind-tables -fno-unwind-tables"
+  )
+  set(CMAKE_C_FLAGS_RELEASE
+      "${CMAKE_C_FLAGS_RELEASE} -fno-asynchronous-unwind-tables -fno-unwind-tables"
+  )
+endif()
 
 if(NOT DEFINED FXDIV_SOURCE_DIR)
   set(ORIGINAL_CMAKE_POSITION_INDEPENDENT_CODE_FLAG
@@ -463,7 +557,11 @@ target_link_libraries(executorch_core PRIVATE program_schema)
 if(ANDROID)
   target_link_libraries(executorch_core PUBLIC log)
 endif()
-if(EXECUTORCH_USE_DL)
+# Skip when cross-compiling: find_library() resolves the host libdl even for a
+# bare-metal target (e.g. arm-none-eabi), which then links -ldl into the
+# baremetal runner and fails ("cannot find -ldl"). dladdr() isn't used on those
+# targets anyway. Per-target presets also set EXECUTORCH_USE_DL OFF explicitly.
+if(EXECUTORCH_USE_DL AND NOT CMAKE_CROSSCOMPILING)
   # Check if dl exists for this toolchain and only then link it.
   find_library(DL_LIBRARY_EXISTS NAMES dl)
   # Check if the library was found
@@ -477,6 +575,9 @@ target_include_directories(
 target_compile_definitions(
   executorch_core PUBLIC C10_USING_CUSTOM_GENERATED_MACROS
 )
+if(NOT EXECUTORCH_ENABLE_LOGGING)
+  target_compile_definitions(executorch_core PUBLIC ET_LOG_ENABLED=0)
+endif()
 target_compile_options(executorch_core PUBLIC ${_common_compile_options})
 if(MAX_KERNEL_NUM)
   target_compile_definitions(
@@ -525,6 +626,9 @@ add_library(executorch ${_executorch__srcs})
 target_link_libraries(executorch PRIVATE executorch_core)
 target_include_directories(executorch PUBLIC ${_common_include_directories})
 target_compile_definitions(executorch PUBLIC C10_USING_CUSTOM_GENERATED_MACROS)
+if(NOT EXECUTORCH_ENABLE_LOGGING)
+  target_compile_definitions(executorch PUBLIC ET_LOG_ENABLED=0)
+endif()
 target_compile_options(executorch PUBLIC ${_common_compile_options})
 executorch_target_link_options_shared_lib(executorch)
 
@@ -660,6 +764,11 @@ if(EXECUTORCH_BUILD_MPS)
   list(APPEND _executorch_backends mpsdelegate)
 endif()
 
+if(EXECUTORCH_BUILD_MLX)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/backends/mlx)
+  list(APPEND _executorch_backends mlxdelegate)
+endif()
+
 if(EXECUTORCH_BUILD_NEURON)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/backends/mediatek)
   list(APPEND _executorch_backends neuron_backend)
@@ -685,7 +794,7 @@ if(EXECUTORCH_BUILD_XNNPACK)
   list(APPEND _executorch_backends xnnpack_backend)
 endif()
 
-if(EXECUTORCH_BUILD_CORTEX_M)
+if(EXECUTORCH_BUILD_CORTEX_M OR EXECUTORCH_BUILD_CMSIS_NN_PYBINDS)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/backends/cortex_m)
 endif()
 
@@ -697,6 +806,20 @@ if(EXECUTORCH_BUILD_CUDA
    OR EXECUTORCH_BUILD_PYBIND
 )
   find_package_torch()
+endif()
+
+# Backend-neutral caller-stream guard consumed by the CUDA AOTI backend (and the
+# vendored torch-tensorrt delegate). Built before backends/aoti and
+# backends/cuda, which link it.
+if(EXECUTORCH_BUILD_CUDA)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/extension/cuda)
+  install(
+    DIRECTORY extension/cuda/
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/executorch/extension/cuda
+    FILES_MATCHING
+    PATTERN "*.h"
+  )
+  list(APPEND _executorch_extensions extension_cuda)
 endif()
 
 # Build common AOTI functionality if needed by CUDA or Metal backends
@@ -781,6 +904,8 @@ if(EXECUTORCH_BUILD_EXTENSION_LLM)
     )
   endif()
   list(APPEND _executorch_extensions tokenizers)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/extension/llm/cache)
+  list(APPEND _executorch_extensions extension_llm_cache)
 endif()
 
 if(EXECUTORCH_BUILD_EXTENSION_RUNNER_UTIL)
@@ -797,6 +922,11 @@ endif()
 if(EXECUTORCH_BUILD_EXTENSION_TENSOR)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/extension/tensor)
   list(APPEND _executorch_extensions extension_tensor)
+endif()
+
+if(EXECUTORCH_BUILD_EXTENSION_IMAGE)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/extension/image)
+  list(APPEND _executorch_extensions extension_image)
 endif()
 
 if(EXECUTORCH_BUILD_PTHREADPOOL AND EXECUTORCH_BUILD_CPUINFO)
@@ -823,6 +953,9 @@ if(EXECUTORCH_BUILD_KERNELS_TORCHAO)
   set(TORCHAO_BUILD_CPU_AARCH64 ON)
   set(TORCHAO_ENABLE_ARM_NEON_DOT ON)
   set(TORCHAO_BUILD_KLEIDIAI ON)
+
+  # TorchAO requires find_package(Torch) for include dirs; add its cmake path.
+  add_torch_to_cmake_prefix_path()
 
   # TorchAO kernels look for EXECUTORCH_INCLUDE_DIRS
   if(DEFINED EXECUTORCH_INCLUDE_DIRS)
@@ -953,8 +1086,16 @@ if(EXECUTORCH_BUILD_PYBIND)
     list(APPEND _dep_libs coremldelegate)
   endif()
 
+  if(EXECUTORCH_BUILD_VGF)
+    list(APPEND _dep_libs vgf_backend)
+  endif()
+
   if(EXECUTORCH_BUILD_MPS)
     list(APPEND _dep_libs mpsdelegate)
+  endif()
+
+  if(EXECUTORCH_BUILD_MLX)
+    list(APPEND _dep_libs mlxdelegate)
   endif()
 
   if(EXECUTORCH_BUILD_OPENVINO)
@@ -984,6 +1125,10 @@ if(EXECUTORCH_BUILD_PYBIND)
     list(APPEND _dep_libs vulkan_backend)
   endif()
 
+  if(EXECUTORCH_BUILD_WEBGPU)
+    list(APPEND _dep_libs webgpu_backend)
+  endif()
+
   # compile options for pybind
   set(_pybind_compile_options
       $<$<CXX_COMPILER_ID:MSVC>:/EHsc
@@ -1010,6 +1155,7 @@ if(EXECUTORCH_BUILD_PYBIND)
 
   # pybind portable_lib
   pybind11_add_module(portable_lib SHARED extension/pybindings/pybindings.cpp)
+  strip_python_lib(portable_lib)
   # The actual output file needs a leading underscore so it can coexist with
   # portable_lib.py in the same python package. PyTorch requires C++20, so
   # pybindings must be compiled with C++20.
@@ -1051,12 +1197,19 @@ if(EXECUTORCH_BUILD_PYBIND)
   pybind11_add_module(
     data_loader SHARED extension/pybindings/pybindings_data_loader.cpp
   )
+  strip_python_lib(data_loader)
   target_include_directories(data_loader PRIVATE ${_common_include_directories})
   target_compile_options(data_loader PUBLIC ${_pybind_compile_options})
   target_link_libraries(data_loader PRIVATE executorch)
   install(TARGETS data_loader
           LIBRARY DESTINATION executorch/extension/pybindings
   )
+
+  # Copy MLX metallib next to _portable_lib.so for editable installs. MLX uses
+  # dladdr() to find the directory containing the library with MLX code, then
+  # looks for mlx.metallib in that directory. When MLX is statically linked into
+  # _portable_lib.so, we need the metallib colocated with it.
+  executorch_target_copy_mlx_metallib(portable_lib)
 endif()
 
 if(EXECUTORCH_BUILD_WASM)
@@ -1073,6 +1226,8 @@ if(EXECUTORCH_BUILD_EXTENSION_TRAINING)
 endif()
 
 if(EXECUTORCH_BUILD_EXTENSION_LLM_RUNNER)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/extension/memory_allocator)
+  list(APPEND _executorch_extensions extension_memory_allocator)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/extension/llm/runner)
   list(APPEND _executorch_extensions extension_llm_runner)
 endif()
@@ -1092,6 +1247,49 @@ if(EXECUTORCH_BUILD_KERNELS_LLM)
   list(APPEND _executorch_kernels custom_ops_aot_lib)
 endif()
 
+# Consolidated shared library: bundles executorch_core plus commonly used
+# extensions into a single libexecutorch.so.
+if(EXECUTORCH_BUILD_SHARED)
+  executorch_add_shared_library(executorch_shared)
+  set_target_properties(
+    executorch_shared
+    PROPERTIES OUTPUT_NAME executorch
+               ARCHIVE_OUTPUT_NAME executorch_shared
+               EXPORT_NAME executorch-shared
+  )
+  target_include_directories(
+    executorch_shared PUBLIC ${_common_include_directories}
+  )
+  target_compile_definitions(
+    executorch_shared PUBLIC C10_USING_CUSTOM_GENERATED_MACROS
+  )
+  # Link executorch without WHOLE_ARCHIVE because its INTERFACE link options
+  # (from executorch_target_link_options_shared_lib) already force
+  # whole-archive. Link executorch_core explicitly since executorch only has a
+  # PRIVATE dep on it (symbols wouldn't propagate otherwise).
+  target_link_libraries(
+    executorch_shared PRIVATE executorch
+                              $<LINK_LIBRARY:WHOLE_ARCHIVE,executorch_core>
+  )
+  foreach(_ext_target
+          extension_data_loader extension_flat_tensor extension_named_data_map
+          extension_module_static extension_tensor
+  )
+    if(TARGET ${_ext_target})
+      target_link_libraries(
+        executorch_shared PRIVATE $<LINK_LIBRARY:WHOLE_ARCHIVE,${_ext_target}>
+      )
+    endif()
+  endforeach()
+  configure_file(
+    tools/cmake/executorch.pc.in ${CMAKE_CURRENT_BINARY_DIR}/executorch.pc
+    @ONLY
+  )
+  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/executorch.pc
+          DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
+  )
+endif()
+
 if(EXECUTORCH_BUILD_KERNELS_QUANTIZED)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/kernels/quantized)
   executorch_target_link_options_shared_lib(quantized_ops_lib)
@@ -1101,6 +1299,11 @@ endif()
 if(EXECUTORCH_BUILD_VULKAN)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/backends/vulkan)
   list(APPEND _executorch_backends vulkan_backend vulkan_schema)
+endif()
+
+if(EXECUTORCH_BUILD_WEBGPU)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/backends/webgpu)
+  list(APPEND _executorch_backends webgpu_backend)
 endif()
 
 if(EXECUTORCH_BUILD_VGF)
@@ -1177,6 +1380,32 @@ if(NOT EXECUTORCH_SELECT_OPS_YAML STREQUAL ""
   )
   list(APPEND _executorch_kernels executorch_selected_kernels)
 
+  # Auto-right-size the kernel registry unless the user has pinned
+  # MAX_KERNEL_NUM.
+  if(NOT DEFINED CACHE{MAX_KERNEL_NUM} AND NOT DEFINED MAX_KERNEL_NUM)
+    gen_selected_max_kernel_num(
+      LIB_NAME "executorch_selected_kernels" OPLIST_YAMLS
+      ${gen_selected_ops_output_yaml}
+    )
+    target_include_directories(
+      executorch_core
+      PRIVATE ${executorch_selected_kernels_max_kernel_num_include_dir}
+    )
+    add_dependencies(
+      executorch_core executorch_selected_kernels_max_kernel_num_header
+    )
+    if(TARGET executorch_core_shared)
+      target_include_directories(
+        executorch_core_shared
+        PRIVATE ${executorch_selected_kernels_max_kernel_num_include_dir}
+      )
+      add_dependencies(
+        executorch_core_shared
+        executorch_selected_kernels_max_kernel_num_header
+      )
+    endif()
+  endif()
+
   install(
     TARGETS executorch_selected_kernels
     EXPORT ExecuTorchTargets
@@ -1237,6 +1466,9 @@ if(EXECUTORCH_BUILD_EXECUTOR_RUNNER)
   endif()
   target_link_libraries(executor_runner PRIVATE ${_executor_runner_libs})
   target_compile_options(executor_runner PUBLIC ${_common_compile_options})
+  if(ET_ENABLE_VGF_INPUT_DUMP)
+    target_compile_definitions(executor_runner PRIVATE ET_ENABLE_VGF_INPUT_DUMP)
+  endif()
   if(EXECUTORCH_BUILD_ARM_ETHOSU_LINUX OR EXECUTORCH_BUILD_ARM_ETHOSU_IMX)
     if(EXECUTORCH_BUILD_ARM_ETHOSU_LINUX)
       target_compile_definitions(

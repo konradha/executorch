@@ -11,7 +11,7 @@ import numpy as np
 import tempfile
 
 from backends.arm import arm_vela
-from examples.arm import aot_arm_compiler
+from backends.arm.scripts import aot_arm_compiler
 from examples.arm.imx93.operator_benchmarks import (
     BENCH_OPS,
     build_scp_command,

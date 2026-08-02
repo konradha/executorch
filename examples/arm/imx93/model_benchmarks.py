@@ -25,7 +25,7 @@ if _EXECUTORCH_SRC_DIR_STR not in sys.path:
 if _EXECUTORCH_DIR_STR not in sys.path:
     sys.path.insert(0, _EXECUTORCH_DIR_STR)
 
-from examples.arm import aot_arm_compiler
+from backends.arm.scripts import aot_arm_compiler
 from examples.arm.imx93.export_and_verify import (
     DEFAULT_COMPILER_FLAGS,
     DEFAULT_MEMORY_MODE,
@@ -214,14 +214,7 @@ def _model_reference(model_name: str) -> tuple[tuple[torch.Tensor, ...], list[to
         config="Arm/vela.ini",
         extra_compiler_flags=list(DEFAULT_COMPILER_FLAGS),
     )
-    quantized = aot_arm_compiler.quantize(
-        exported_module,
-        model_name,
-        compile_spec,
-        inputs,
-        None,
-        None,
-    )
+    quantized = aot_arm_compiler.quantize(exported_module, model_name, compile_spec, inputs)
     with torch.no_grad():
         outputs = _tensor_sequence(quantized(*inputs))
     return inputs, outputs, "host_quantized_model"

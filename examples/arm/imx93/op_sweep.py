@@ -29,7 +29,7 @@ if str(_EXECUTORCH_DIR / "src") not in sys.path:
 if str(_EXECUTORCH_DIR) not in sys.path:
     sys.path.insert(0, str(_EXECUTORCH_DIR))
 
-from examples.arm import aot_arm_compiler
+from backends.arm.scripts import aot_arm_compiler
 from examples.arm.imx93.export_and_verify import (
     DEFAULT_COMPILER_FLAGS, DEFAULT_MEMORY_MODE, DEFAULT_SYSTEM_CONFIG,
     detect_quantized_ops_library, strip_export_guards,
@@ -239,7 +239,7 @@ def test_op(op_name, size, output_dir):
             config="Arm/vela.ini",
             extra_compiler_flags=list(DEFAULT_COMPILER_FLAGS),
         )
-        quantized = aot_arm_compiler.quantize(gm, op_name, compile_spec, inputs, None, None)
+        quantized = aot_arm_compiler.quantize(gm, op_name, compile_spec, inputs)
         with torch.no_grad():
             q_out = quantized(*inputs)
         if isinstance(q_out, tuple):

@@ -23,7 +23,7 @@ import torch
 from torch import export as torch_export
 
 from backends.arm.test.runner_utils import TosaReferenceModelDispatch
-from examples.arm import aot_arm_compiler as arm_aot_compiler
+from backends.arm.scripts import aot_arm_compiler as arm_aot_compiler
 from examples.arm.imx93.operator_benchmarks import (
     BENCH_OPS,
     build_ssh_command,
@@ -410,14 +410,7 @@ def _delegated_reference_outputs(
         config="Arm/vela.ini",
         extra_compiler_flags=list(DEFAULT_COMPILER_FLAGS),
     )
-    quantized = arm_aot_compiler.quantize(
-        exported_module,
-        str(Path(__file__).with_name("operator_microbench_model.py")),
-        compile_spec,
-        inputs,
-        None,
-        None,
-    )
+    quantized = arm_aot_compiler.quantize(exported_module, str(Path(__file__).with_name("operator_microbench_model.py")), compile_spec, inputs)
     class Args:
         pass
 

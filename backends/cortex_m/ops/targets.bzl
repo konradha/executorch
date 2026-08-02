@@ -58,6 +58,7 @@ OPERATORS = [
     "dequantize_per_tensor",
     "quantized_add",
     "quantized_mul",
+    "quantized_div",
     "minimum",
     "maximum",
     "quantized_linear",
@@ -68,7 +69,9 @@ OPERATORS = [
     "quantized_depthwise_conv2d",
     "quantized_transpose_conv2d",
     "quantized_avg_pool2d",
+    "quantized_batch_matmul",
     "quantized_max_pool2d",
+    "quantized_activation",
 ]
 
 def define_common_targets():

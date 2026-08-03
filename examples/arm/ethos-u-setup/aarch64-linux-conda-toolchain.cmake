@@ -1,8 +1,3 @@
-# Copyright 2026 Arm Limited and/or its affiliates.
-#
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree.
-
 if(CMAKE_VERSION VERSION_LESS 3.20)
   message(FATAL_ERROR "This toolchain file requires at least CMake 3.20")
 endif()

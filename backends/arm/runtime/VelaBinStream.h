@@ -22,10 +22,9 @@ namespace executorch {
 namespace backends {
 namespace arm {
 
-// The wire format uses a fixed 16-byte name field in each block header.
+// Vela block names occupy 16 bytes on the wire.
 constexpr uint32_t kVelaBlockNameLength = 16;
 
-// Generic block emitted by arm_vela.py::vela_compile.
 typedef struct {
   char name[kVelaBlockNameLength]; // Null-terminated or truncated UTF-8 name.
   uint32_t size; // Payload bytes before alignment padding.
@@ -33,7 +32,7 @@ typedef struct {
   char data[]; // Payload format is selected by name.
 } VelaBinBlock;
 
-// Vela serializes each input and output shape as exactly six dimensions.
+// Vela pads each I/O shape to six dimensions.
 constexpr int kVelaShapeDimensions = 6;
 
 // A Vela input or output descriptor in the binary stream

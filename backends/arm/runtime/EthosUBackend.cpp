@@ -428,7 +428,7 @@ void calculate_dimensions(
     *tensor_count = *tensor_count * tensor.size(i);
   }
 
-  // Vela serializes each I/O shape with a fixed dimension count.
+  // Vela pads each I/O shape to six dimensions.
   for (int i = 0; i < kVelaShapeDimensions; i++) {
     *io_count = *io_count * io->shape[i];
   }

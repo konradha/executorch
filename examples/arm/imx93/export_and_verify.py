@@ -14,6 +14,7 @@ from typing import Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_TARGET = "ethos-u65-256"
+# Consumed by backends.arm.arm_vela, not Vela.
 NXP_VELA_MODEL_FLAG = "--embed-nxp-vela-model"
 DEFAULT_SYSTEM_CONFIG = "Ethos_U65_High_End"
 DEFAULT_MEMORY_MODE = "Dedicated_Sram"
@@ -96,8 +97,7 @@ def detect_quantized_ops_library() -> str | None:
             package_root = parent
             break
 
-    # Search only the loaded package and this checkout. Walking every ancestor
-    # can otherwise turn a missing optional library into a scan of the host.
+    # Do not scan ancestors for an optional library.
     search_roots = dict.fromkeys((module_path.parent, package_root, REPO_ROOT))
     for root in search_roots:
         for match in sorted(root.glob("**/*quantized_ops_aot_lib.*")):

@@ -801,11 +801,7 @@ bool check_prod_out_args(
 
 #endif
 
-/**
- * Convert a row-major logical output index to the tensor storage index.
- * Channels-last reductions use this only for the output write. The reduction
- * plan continues to use the logical index to select the matching input slice.
- */
+// Map a row-major logical index to the output storage index.
 inline size_t reduction_output_data_index(
     const Tensor& out,
     size_t logical_index) {

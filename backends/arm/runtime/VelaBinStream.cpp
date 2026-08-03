@@ -20,8 +20,7 @@ namespace executorch {
 namespace backends {
 namespace arm {
 
-// Each header and payload starts on a 16-byte boundary. arm_vela.py emits the
-// same padding, and the firmware command stream requires this alignment.
+// Vela aligns each block header and payload to 16 bytes.
 constexpr size_t kVelaBlockAlignment = 16;
 
 bool block_name_is(const VelaBinBlock& block, const char* expected) {
@@ -116,8 +115,7 @@ bool vela_bin_validate(const char* data, int size) {
       }
     }
 
-    // COP1 and COP2 are the command-stream magic values from the Ethos-U
-    // driver ABI. Vela writes one of them at the start of cmd_data.
+    // Custom-operator payload signatures; the bytes spell COP1 or COP2.
     if (block_name_is(*block, "vela_bin_stream")) {
       if (reinterpret_cast<const char*>(block) != data) {
         ET_LOG(Error, "Duplicate header in vela_bin_stream");

@@ -493,11 +493,6 @@ def get_compile_spec(
     direct_drive: bool = False,
     extra_compiler_flags: Optional[List[str]] = None,
 ) -> TosaCompileSpec | EthosUCompileSpec | VgfCompileSpec:
-    """Build a compile spec from explicit arguments.
-
-    Kept for programmatic callers that do not have a CLI args namespace,
-    such as the i.MX93 export and benchmark tooling.
-    """
     compile_spec = None
     if target.startswith("TOSA"):
         tosa_spec = TosaSpecification.create_from_string(target)
@@ -509,6 +504,7 @@ def get_compile_spec(
         if debug_mode is not None:
             extra_flags.append("--enable-debug-db")
         if direct_drive:
+            # Direct-drive firmware uses COP2 with separate I/O regions.
             extra_flags.append("--separate-io-regions")
             extra_flags.append("--cop-format=COP2")
         compile_spec = EthosUCompileSpec(

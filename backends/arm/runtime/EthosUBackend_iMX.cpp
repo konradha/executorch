@@ -6,9 +6,7 @@
  */
 
 /*
- * Arm backend for the NXP i.MX Ethos-U Linux driver. The driver uses
- * /dev/ethosu0, a Vela-compiled model, and one shared arena for I/O and
- * scratch data.
+ * NXP i.MX uses a Vela model and one I/O/scratch arena through /dev/ethosu0.
  */
 
 #include <algorithm>
@@ -42,14 +40,12 @@ namespace executorch {
 namespace backends {
 namespace arm {
 
-// The NXP IOCTL accepts a timeout in nanoseconds. Sixty seconds matches the
-// Linux driver sample and permits large first-run model setup.
+// Match EthosU::Interpreter::Invoke.
 constexpr int64_t kDefaultTimeoutNs = 60'000'000'000LL;
-// Keep the arena data on a cache-line boundary inside the page-aligned DMA
-// buffer returned by the NXP driver.
+// Cache-line alignment for the scratch base.
 constexpr size_t kArenaDataAlignment = 64;
 constexpr size_t kBytesPerMiB = size_t{1} << 20;
-// The NXP userspace driver defines its default tensor arena as 20 MiB.
+// Match the driver library's default arena size.
 constexpr size_t kDefaultArenaBytes =
     size_t{DEFAULT_ARENA_SIZE_OF_MB} * kBytesPerMiB;
 
@@ -297,6 +293,7 @@ Error platform_execute(
         return Error::InvalidProgram;
       }
 
+      // The NXP API names byte counts "dims".
       const auto& input_sizes = network->getIfmDims();
       const auto& output_sizes = network->getOfmDims();
       if (input_sizes.size() != network_input_count ||
@@ -340,6 +337,7 @@ Error platform_execute(
         max_io_extent = std::max(max_io_extent, end);
       }
 
+      // Scratch follows the highest I/O byte range.
       const size_t arena_offset = align_up(max_io_extent, kArenaDataAlignment);
       layout.arena_offset =
           checked_u32(arena_offset, "Arena offset exceeds UAPI");

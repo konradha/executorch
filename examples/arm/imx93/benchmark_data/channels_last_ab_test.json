@@ -1,6 +1,0 @@
-[
-  {"model":"mv2","layout":"clast","status":"ok","device_argmax":104,"quant_argmax":258,"float_argmax":258,"cosine_vs_quant":0.187,"rmse_vs_quant":2.142,"top1_match_quant":0},
-  {"model":"mv2","layout":"nchw","status":"ok","device_argmax":258,"quant_argmax":258,"float_argmax":258,"cosine_vs_quant":0.989,"rmse_vs_quant":0.100,"top1_match_quant":1},
-  {"model":"resnet18","layout":"clast","status":"ok","device_argmax":587,"quant_argmax":107,"float_argmax":107,"cosine_vs_quant":0.236,"rmse_vs_quant":2.555,"top1_match_quant":0},
-  {"model":"resnet18","layout":"nchw","status":"ok","device_argmax":107,"quant_argmax":107,"float_argmax":107,"cosine_vs_quant":0.999,"rmse_vs_quant":0.061,"top1_match_quant":1}
-]

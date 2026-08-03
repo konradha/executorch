@@ -69,10 +69,6 @@ define_overridable_option(
   "Build the Arm Ethos-U backend for the Linux driver stack" BOOL OFF
 )
 define_overridable_option(
-  EXECUTORCH_BUILD_ARM_ETHOSU_IMX
-  "Build the Arm Ethos-U backend for the NXP i.MX Linux driver stack" BOOL OFF
-)
-define_overridable_option(
   EXECUTORCH_BUILD_KERNELS_LLM "Build the custom kernels" BOOL OFF
 )
 define_overridable_option(
@@ -269,12 +265,7 @@ check_conflicting_options_on(
 
 check_conflicting_options_on(
   IF_ON EXECUTORCH_BUILD_ARM_ETHOSU_LINUX CONFLICTS_WITH
-  EXECUTORCH_BUILD_ARM_BAREMETAL EXECUTORCH_BUILD_ARM_ETHOSU_IMX
-)
-
-check_conflicting_options_on(
-  IF_ON EXECUTORCH_BUILD_ARM_ETHOSU_IMX CONFLICTS_WITH
-  EXECUTORCH_BUILD_ARM_BAREMETAL EXECUTORCH_BUILD_ARM_ETHOSU_LINUX
+  EXECUTORCH_BUILD_ARM_BAREMETAL
 )
 
 # TODO(jathu): move this to platform specific presets when created

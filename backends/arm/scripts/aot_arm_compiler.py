@@ -14,11 +14,8 @@ import copy
 import logging
 import os
 import sys
-
 from enum import Enum
-
 from pathlib import Path
-
 from typing import Any, List, Optional, Tuple
 
 import torch
@@ -31,10 +28,8 @@ from executorch.backends.arm.quantizer import (
 from executorch.backends.arm.tosa import TosaSpecification
 from executorch.backends.arm.tosa.compile_spec import TosaCompileSpec
 from executorch.backends.arm.util._factory import create_partitioner, create_quantizer
-
 from executorch.backends.arm.vgf import VgfCompileSpec
 from executorch.backends.cortex_m.passes.cortex_m_pass_manager import CortexMPassManager
-
 from executorch.backends.cortex_m.passes.replace_quant_nodes_pass import (
     ReplaceQuantNodesPass,
 )
@@ -48,13 +43,11 @@ from executorch.devtools.bundled_program.serialize import (
 )
 from executorch.examples.models import MODEL_NAME_TO_MODEL
 from executorch.examples.models.model_factory import EagerModelFactory
-
 from executorch.exir import (
     EdgeCompileConfig,
     ExecutorchBackendConfig,
     to_edge_transform_and_lower,
 )
-
 from executorch.extension.export_util.utils import save_pte_program
 from tabulate import tabulate  # type: ignore[import-untyped]
 from torch.export import ExportedProgram
@@ -91,9 +84,7 @@ def _load_example_inputs(model_input: str | None) -> Any:  # nosec B614
     logging.info(f"Load model input from {model_input}")
 
     if model_input.endswith(".pt"):
-        return torch.load(
-            model_input, weights_only=False
-        )  # nosec B614 trusted artifacts
+        return torch.load(model_input, weights_only=False)  # nosec B614 trusted artifacts
 
     raise RuntimeError(
         f"Model input data '{model_input}' is not a valid name. Use --model_input "
@@ -197,7 +188,6 @@ def _load_serialized_model(
 
 def _apply_replace_quant_nodes(edge, target: str, direct_drive: bool):
     """Apply the replace_quant_nodes pass to the edge graph module."""
-
     if target != "vgf" and not direct_drive:
         edge = edge.transform([ReplaceQuantNodesPass()])
     return edge
@@ -256,8 +246,7 @@ def as_input_tuple(sample: object) -> Tuple[torch.Tensor, ...]:
             return (sample["pixel_values"],)
         raise ValueError("Calibration sample dict must contain 'pixel_values' key.")
     raise ValueError(
-        "Calibration sample must be a Tensor, tuple, list, or dict with "
-        "'pixel_values'."
+        "Calibration sample must be a Tensor, tuple, list, or dict with 'pixel_values'."
     )
 
 
@@ -317,7 +306,7 @@ def _validate_calibration_sample(
             % (len(calibration_sample), expected_len)
         )
     for input_idx, (expected, actual) in enumerate(
-        zip(example_inputs, calibration_sample)
+        zip(example_inputs, calibration_sample, strict=True)
     ):
         if isinstance(expected, torch.Tensor) and isinstance(actual, torch.Tensor):
             if expected.shape != actual.shape:
@@ -480,44 +469,17 @@ TARGETS = [
 
 
 def _get_compile_spec(args) -> ArmCompileSpec:
-    compile_spec: ArmCompileSpec
-
-    if args.target.startswith("TOSA"):
-        tosa_spec = TosaSpecification.create_from_string(args.target)
-        compile_spec = TosaCompileSpec(tosa_spec)
-    elif "ethos-u" in args.target:
-        extra_flags = ["--verbose-operators", "--verbose-cycle-estimate"]
-        if args.extra_compiler_flag:
-            extra_flags.extend(args.extra_compiler_flag)
-        if args.enable_debug_mode is not None:
-            extra_flags.append("--enable-debug-db")
-        if args.direct_drive:
-            extra_flags.append("--separate-io-regions")
-            extra_flags.append("--cop-format=COP2")
-        compile_spec = EthosUCompileSpec(
-            args.target,
-            system_config=args.system_config,
-            memory_mode=args.memory_mode,
-            extra_flags=extra_flags,
-            config_ini=args.config,
-        )
-    elif "vgf" in args.target:
-        if args.quantize:
-            tosa_spec = TosaSpecification.create_from_string("TOSA-1.0+INT")
-        else:
-            tosa_spec = TosaSpecification.create_from_string("TOSA-1.0+FP")
-        compile_spec = VgfCompileSpec(tosa_spec)
-    else:
-        raise RuntimeError(f"Unkown target {args.target}")
-
-    if args.intermediates is not None:
-        compile_spec.dump_intermediate_artifacts_to(args.intermediates)
-
-    if args.enable_debug_mode is not None:
-        mode = ArmCompileSpec.DebugMode[args.enable_debug_mode.upper()]
-        compile_spec.dump_debug_info(mode)
-
-    return compile_spec
+    return get_compile_spec(
+        target=args.target,
+        intermediates=args.intermediates,
+        system_config=args.system_config,
+        memory_mode=args.memory_mode,
+        quantize=args.quantize,
+        config=args.config,
+        debug_mode=args.enable_debug_mode,
+        direct_drive=args.direct_drive,
+        extra_compiler_flags=args.extra_compiler_flag,
+    )
 
 
 def get_compile_spec(
@@ -563,7 +525,7 @@ def get_compile_spec(
             tosa_spec = TosaSpecification.create_from_string("TOSA-1.0+FP")
         compile_spec = VgfCompileSpec(tosa_spec)
     else:
-        raise RuntimeError(f"Unkown target {target}")
+        raise RuntimeError(f"Unknown target {target}")
 
     if intermediates is not None:
         compile_spec.dump_intermediate_artifacts_to(intermediates)
@@ -858,8 +820,8 @@ def _save_bpte_program(
             model_path = os.path.join(intermediates_path, "model.pth")
             try:
                 torch.save(original_model, model_path)
-            except:
-                logging.warning(f"Could not torch.save(model, {model_path})")
+            except Exception as error:
+                logging.warning("Could not save %s: %s", model_path, error)
 
         method_index = 0
         for method_input in method_inputs:
@@ -869,25 +831,22 @@ def _save_bpte_program(
             logging.debug(f"output_ref_{method_index}: {output_ref}")
 
             if args.intermediates:
-                # Save model input and referece output
+                # Save the model input and reference output.
                 input_path = os.path.join(
-                    intermediates_path, f"input_{method_index}.pt"  # type: ignore[possibly-undefined]
+                    intermediates_path,
+                    f"input_{method_index}.pt",  # type: ignore[possibly-undefined]
                 )
                 try:
                     torch.save(method_input, input_path)
-                except:
-                    logging.warning(
-                        f"Could not torch.save(input_{method_index}, {input_path})"
-                    )
+                except Exception as error:
+                    logging.warning("Could not save %s: %s", input_path, error)
                 refoutput_path = os.path.join(
                     intermediates_path, f"output_ref_{method_index}.pt"
                 )
                 try:
                     torch.save(output_ref, refoutput_path)
-                except:
-                    logging.warning(
-                        f"Could not torch.save(output_ref_{method_index}, {refoutput_path})"
-                    )
+                except Exception as error:
+                    logging.warning("Could not save %s: %s", refoutput_path, error)
 
             method_test_cases.append(
                 MethodTestCase(
@@ -962,7 +921,7 @@ def quantize_model(
     return model_quant, exported_program
 
 
-def _to_edge_TOSA_delegate(
+def to_edge_tosa_delegate(
     target: str,
     exported_program: ExportedProgram,
     compile_spec,
@@ -1190,7 +1149,7 @@ def main() -> None:  # noqa: C901
     elif args.delegate:
         # As we can target multiple output encodings, one must
         # be specified.
-        model_quant, edge = _to_edge_TOSA_delegate(
+        model_quant, edge = to_edge_tosa_delegate(
             args.target,
             exported_program,
             _get_compile_spec(args),

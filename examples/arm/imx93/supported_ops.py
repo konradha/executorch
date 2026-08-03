@@ -322,9 +322,7 @@ IMX93_FASTPATH_MATRIX = {
         "tflite_op": "SLICE",
         "delegated_payload": True,
         "gap_layer": "none",
-        "official_constraints": (
-            "Begin and size tensors must be constant.",
-        ),
+        "official_constraints": ("Begin and size tensors must be constant.",),
         "observed_status": "correct",
         "observed_sizes": (16,),
         "model_guidance": "Safe delegated building block. Export with NCHW (default).",
@@ -439,16 +437,15 @@ def print_ops() -> None:
     summary = summarize_ops()
     print("Ethos-U65 supported operators for the i.MX93 fast path")
     print("=" * 56)
-    print(f"INT ops: {summary['int_ops']} across {summary['int_categories']} categories")
+    print(
+        f"INT ops: {summary['int_ops']} across {summary['int_categories']} categories"
+    )
     print(
         f"FP-only extras: {summary['fp_extra_ops']} across "
         f"{summary['fp_extra_categories']} categories"
     )
     print(f"Model notes: {summary['models']}")
-    print(
-        "Under-documented TFLite ops: "
-        f"{summary['under_documented_tflite_ops']}"
-    )
+    print(f"Under-documented TFLite ops: {summary['under_documented_tflite_ops']}")
     for category, ops in ETHOS_U65_INT_OPS.items():
         print(f"\n[{category}]")
         for op in ops:

@@ -50,7 +50,8 @@ void compute_variance(
                 },
                 [](CTYPE_OUT outv, CTYPE_OUT acc) { return acc + outv; },
                 out_ix);
-            out_data[out_ix] = sum2 / denominator;
+            out_data[reduction_output_data_index(out, out_ix)] =
+                sum2 / denominator;
           }
         });
     ET_KERNEL_CHECK_MSG(ctx, success, Internal, , "parallel_for failed");

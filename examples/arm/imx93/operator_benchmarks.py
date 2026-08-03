@@ -10,15 +10,14 @@ import re
 import shlex
 import subprocess  # nosec B404 - launches trusted local tooling
 import sys
-
 from pathlib import Path
 
 from examples.arm.imx93.export_and_verify import (
+    build_export_command,
+    build_export_env,
     DEFAULT_COMPILER_FLAGS,
     DEFAULT_MEMORY_MODE,
     DEFAULT_SYSTEM_CONFIG,
-    build_export_command,
-    build_export_env,
 )
 from examples.arm.imx93.supported_ops import ARM_TFLITE_CONSTRAINT_HINTS
 

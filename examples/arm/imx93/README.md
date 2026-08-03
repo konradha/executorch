@@ -41,7 +41,7 @@ Cross-build notes:
 
 Practical hints:
 - this tree defaults to `Dedicated_Sram` with `--arena-cache-size=98304`
-- for 4D delegated tensors, keep the fastpath in `--channels_last_4d`; this is required for correct tensor storage ordering on the i.MX93 Linux driver path
+- keep `--channels_last_4d` disabled for full-model exports; the recorded A/B test shows corrupt model outputs when it is enabled; the operator microbenchmark uses it only for standalone rank-4 cases with matching reference storage
 - keep `PYTHONPATH` pointed at this checkout if you also have another editable ExecuTorch install nearby
 - keep `_guards_fn` out of exported graphs
 - do not use this flow to poke remoteproc internals

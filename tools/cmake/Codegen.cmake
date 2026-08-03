@@ -193,14 +193,6 @@ function(generate_bindings_for_kernels)
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     OUTPUT_STRIP_TRAILING_WHITESPACE
   )
-  if(NOT torchgen-result EQUAL 0 OR "${torchgen-out}" STREQUAL "")
-    message(
-      FATAL_ERROR
-        "Unable to import torchgen with PYTHON_EXECUTABLE=${PYTHON_EXECUTABLE}. "
-        "Use a Python environment that provides torch/torchgen for ExecuTorch "
-        "code generation."
-    )
-  endif()
   file(GLOB_RECURSE _torchgen_srcs "${torchgen-out}/*.py")
   # Not using module executorch.codegen.gen because it's not installed yet.
   set(_gen_command

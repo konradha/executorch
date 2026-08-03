@@ -607,3 +607,24 @@ TEST_F(OpMeanOutTest, EmptyInput) {
   op_mean_out(x, dim_list, /*keepdim=*/true, dtype, out);
   EXPECT_TENSOR_CLOSE(out, tf.make({2, 0, 1}, {}));
 }
+
+TEST_F(OpMeanOutTest, ChannelsLastOutputUsesOutputStrides) {
+  TensorFactory<ScalarType::Float> tf;
+  const Tensor contiguous =
+      tf.make({1, 2, 2, 3}, {0, 1, 2, 2, 5, 8, 10, 11, 12, 14, 17, 20});
+  const Tensor input = tf.channels_last_like(contiguous);
+  const Tensor expected_contiguous =
+      tf.make({1, 2, 1, 3}, {1, 3, 5, 12, 14, 16});
+  const Tensor expected = tf.channels_last_like(expected_contiguous);
+  Tensor out = tf.zeros_channels_last({1, 2, 1, 3});
+
+  const int64_t dims[] = {2};
+  op_mean_out(
+      input,
+      ArrayRef<int64_t>{dims},
+      /*keepdim=*/true,
+      ScalarType::Float,
+      out);
+
+  EXPECT_TENSOR_CLOSE(out, expected);
+}

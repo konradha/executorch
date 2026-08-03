@@ -1,17 +1,29 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
+import tempfile
 import unittest
-
 from pathlib import Path
 from unittest import mock
 
-import torch
-
 import numpy as np
-import tempfile
-
+import torch
 from backends.arm import arm_vela
 from backends.arm.scripts import aot_arm_compiler
+from examples.arm.imx93.export_and_verify import (
+    build_export_command,
+    build_export_env,
+    DEFAULT_COMPILER_FLAGS,
+    DEFAULT_MEMORY_MODE,
+    DEFAULT_SYSTEM_CONFIG,
+    detect_quantized_ops_library,
+    strip_export_guards,
+    verify_device_output,
+)
+from examples.arm.imx93.fastpath_delta_report import render_markdown
+from examples.arm.imx93.model_benchmarks import (
+    MODEL_PARAMS_MILLIONS,
+    summarize_device_output,
+)
 from examples.arm.imx93.operator_benchmarks import (
     BENCH_OPS,
     build_scp_command,
@@ -20,16 +32,6 @@ from examples.arm.imx93.operator_benchmarks import (
     parse_runner_output,
     trim_output,
 )
-from examples.arm.imx93.export_and_verify import (
-    DEFAULT_COMPILER_FLAGS,
-    DEFAULT_MEMORY_MODE,
-    DEFAULT_SYSTEM_CONFIG,
-    build_export_command,
-    build_export_env,
-    detect_quantized_ops_library,
-    strip_export_guards,
-    verify_device_output,
-)
 from examples.arm.imx93.operator_microbench_model import build_case, execution_inputs
 from examples.arm.imx93.operator_sweep import (
     _comparison_tensor,
@@ -37,11 +39,6 @@ from examples.arm.imx93.operator_sweep import (
     _reference_delta,
     _save_tensor_sequence,
     _tensor_storage_bytes,
-)
-from examples.arm.imx93.fastpath_delta_report import render_markdown
-from examples.arm.imx93.model_benchmarks import (
-    MODEL_PARAMS_MILLIONS,
-    summarize_device_output,
 )
 from examples.arm.imx93.supported_ops import (
     IMX93_FASTPATH_MATRIX,
@@ -181,7 +178,9 @@ class FastpathUtilsTest(unittest.TestCase):
             "imx_runtime",
         )
         self.assertFalse(IMX93_FASTPATH_MATRIX["argmax"]["delegated_payload"])
-        self.assertTrue(IMX93_FASTPATH_MATRIX["resize_nearest_neighbor"]["delegated_payload"])
+        self.assertTrue(
+            IMX93_FASTPATH_MATRIX["resize_nearest_neighbor"]["delegated_payload"]
+        )
 
     def test_supported_ops_trusted_and_unresolved_sets_are_stable(self):
         trusted = trusted_delegated_ops()
@@ -238,7 +237,7 @@ class FastpathUtilsTest(unittest.TestCase):
         _, unpack_inputs = build_case("unpack", 16)
         self.assertEqual(unpack_inputs[0].shape, (1, 4, 4, 16))
 
-    def test_operator_microbench_execution_inputs_are_ones_like(self):
+    def test_operator_microbench_execution_inputs_are_independent_clones(self):
         _, example_inputs = build_case("cat", 8)
         inputs = execution_inputs(example_inputs)
         self.assertEqual(len(inputs), 2)
@@ -306,13 +305,17 @@ class FastpathUtilsTest(unittest.TestCase):
     def test_operator_sweep_save_tensor_sequence_writes_npy_files(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
-            _save_tensor_sequence((torch.arange(4, dtype=torch.float32),), output_dir, "reference")
+            _save_tensor_sequence(
+                (torch.arange(4, dtype=torch.float32),), output_dir, "reference"
+            )
             saved = np.load(output_dir / "reference-0.npy")
         self.assertTrue(np.array_equal(saved, np.arange(4, dtype=np.float32)))
 
     def test_operator_export_trim_keeps_tail(self):
         payload = "\n".join(f"line-{idx}" for idx in range(30))
-        self.assertEqual(trim_output(payload, line_count=3), "line-27\nline-28\nline-29")
+        self.assertEqual(
+            trim_output(payload, line_count=3), "line-27\nline-28\nline-29"
+        )
 
     def test_ssh_and_scp_commands_accept_custom_options(self):
         ssh_command = build_ssh_command(
@@ -328,7 +331,13 @@ class FastpathUtilsTest(unittest.TestCase):
         )
         self.assertEqual(
             ssh_command[:5],
-            ["ssh", "-o", "ProxyCommand=example proxy", "-o", "StrictHostKeyChecking=no"],
+            [
+                "ssh",
+                "-o",
+                "ProxyCommand=example proxy",
+                "-o",
+                "StrictHostKeyChecking=no",
+            ],
         )
         self.assertEqual(ssh_command[-2:], ["user@host", "echo ok"])
         self.assertEqual(
@@ -342,10 +351,12 @@ class FastpathUtilsTest(unittest.TestCase):
             ],
         )
 
-    def test_vela_compile_includes_vela_model_block(self):
+    def test_vela_compile_embeds_model_only_when_requested(self):
         with mock.patch.object(arm_vela, "has_vela", True):
             with mock.patch.object(arm_vela, "vela", create=True) as fake_vela:
+
                 def fake_main(argv):
+                    self.assertNotIn(arm_vela.NXP_VELA_MODEL_FLAG, argv)
                     output_dir = None
                     for item in argv:
                         if item.startswith("--output-dir="):
@@ -371,10 +382,20 @@ class FastpathUtilsTest(unittest.TestCase):
                     )
 
                 fake_vela.main.side_effect = fake_main
-                payload = arm_vela.vela_compile(b"tosa", ["--output-format=raw"])
+                standard_payload = arm_vela.vela_compile(
+                    b"tosa", ["--output-format=raw"]
+                )
+                imx_payload = arm_vela.vela_compile(
+                    b"tosa",
+                    [
+                        "--output-format=raw",
+                        arm_vela.NXP_VELA_MODEL_FLAG,
+                    ],
+                )
 
-        self.assertIn(b"vela_model", payload)
-        self.assertIn(b"imx-tflite", payload)
+        self.assertNotIn(b"vela_model", standard_payload)
+        self.assertIn(b"vela_model", imx_payload)
+        self.assertIn(b"imx-tflite", imx_payload)
 
 
 if __name__ == "__main__":

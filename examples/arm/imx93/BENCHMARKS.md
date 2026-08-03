@@ -133,7 +133,7 @@ All measurements follow the same protocol:
 
 The input for each model is deterministic (from ExecuTorch's `EagerModelFactory`). No ImageNet validation set was used — this is a numerical fidelity test, not an accuracy benchmark.
 
-Tools: `device_numerics_test.py` for model benchmarks, `op_sweep.py` for operator microbenchmarks, `run_benchmarks.py` for multi-execution timing. All in `examples/arm/imx93/` in the ExecuTorch fastpath branch.
+Tools: `model_benchmarks.py` measures full models. `operator_sweep.py` measures operator cases. Both tools require explicit `--runner` and `--ssh_target` arguments. `plot_model_benchmarks.py` and `plot_operator_sweep.py` read the generated JSON summaries.
 
 ## Bottom line
 

@@ -107,7 +107,7 @@ Tensor& mean_dim_out(
                     [](ACC outv, ACC acc) { return acc + outv; },
                     out_ix);
               }
-              out_data[out_ix] =
+              out_data[reduction_output_data_index(out, out_ix)] =
                   static_cast<CTYPE_OUT>(sum / static_cast<float>(num));
             }
           });

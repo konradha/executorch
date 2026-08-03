@@ -4,21 +4,25 @@
 from __future__ import annotations
 
 import argparse
-import glob
 import json
 import os
 import subprocess  # nosec B404 - launches trusted local tooling
 import sys
-
 from pathlib import Path
 from typing import Iterable
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_TARGET = "ethos-u65-256"
+NXP_VELA_MODEL_FLAG = "--embed-nxp-vela-model"
 DEFAULT_SYSTEM_CONFIG = "Ethos_U65_High_End"
 DEFAULT_MEMORY_MODE = "Dedicated_Sram"
-DEFAULT_COMPILER_FLAGS = ("--arena-cache-size=98304",)
+# The i.MX93 exposes 96 KiB of non-secure SRAM to the Ethos-U.
+NPU_SRAM_BYTES = 96 * 1024
+DEFAULT_COMPILER_FLAGS = (
+    f"--arena-cache-size={NPU_SRAM_BYTES}",
+    NXP_VELA_MODEL_FLAG,
+)
 
 
 def strip_export_guards(graph_module):
@@ -86,19 +90,19 @@ def detect_quantized_ops_library() -> str | None:
     except Exception:
         return None
     module_path = Path(portable_lib.__file__).resolve()
-    seen: set[str] = set()
+    package_root = module_path.parent
     for parent in module_path.parents:
-        matches = sorted(
-            {
-                str(path)
-                for path in parent.glob("**/*quantized_ops_aot_lib.*")
-                if path.is_file()
-            }
-        )
-        for match in matches:
-            if match not in seen:
-                seen.add(match)
-                return match
+        if parent.name == "executorch":
+            package_root = parent
+            break
+
+    # Search only the loaded package and this checkout. Walking every ancestor
+    # can otherwise turn a missing optional library into a scan of the host.
+    search_roots = dict.fromkeys((module_path.parent, package_root, REPO_ROOT))
+    for root in search_roots:
+        for match in sorted(root.glob("**/*quantized_ops_aot_lib.*")):
+            if match.is_file():
+                return str(match)
     return None
 
 

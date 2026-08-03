@@ -802,6 +802,29 @@ bool check_prod_out_args(
 #endif
 
 /**
+ * Convert a row-major logical output index to the tensor storage index.
+ * Channels-last reductions use this only for the output write. The reduction
+ * plan continues to use the logical index to select the matching input slice.
+ */
+inline size_t reduction_output_data_index(
+    const Tensor& out,
+    size_t logical_index) {
+  if (is_contiguous_dim_order(out.dim_order().data(), out.dim())) {
+    return logical_index;
+  }
+
+  size_t data_index = 0;
+  for (ssize_t dim = out.dim(); dim > 0; --dim) {
+    const size_t dimension = static_cast<size_t>(dim - 1);
+    const size_t dimension_size = static_cast<size_t>(out.size(dimension));
+    const size_t coordinate = logical_index % dimension_size;
+    logical_index /= dimension_size;
+    data_index += coordinate * static_cast<size_t>(out.strides()[dimension]);
+  }
+  return data_index;
+}
+
+/**
  * parallel_for wrapper for reductions that call reduce_over_dim or
  * map_reduce_over_dim for each output element. Automatically
  * calculates appropriate grain size.

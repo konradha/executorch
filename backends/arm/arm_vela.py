@@ -7,7 +7,6 @@
 import os
 import struct
 import tempfile
-
 from typing import List
 
 import numpy as np
@@ -18,6 +17,8 @@ try:
     has_vela = True
 except ImportError:
     has_vela = False
+
+NXP_VELA_MODEL_FLAG = "--embed-nxp-vela-model"
 
 
 def _as_int32(value, name: str) -> int:
@@ -66,13 +67,18 @@ def vela_compile(
     verbose: bool = False,
     intermediate_path: str | None = None,
 ):
-    """Compile a TOSA graph to a binary stream for ArmBackendEthosU using
-    Vela.
+    """Compile a TOSA graph to an ArmBackendEthosU binary stream.
+
+    NXP Linux targets can request an embedded Vela TFLite model with
+    ``NXP_VELA_MODEL_FLAG``. The private flag is not passed to Vela.
     """
     if not has_vela:
         raise RuntimeError(
             "ethos-u-vela pip package couldn't be imported. Make sure it's installed!"
         )
+
+    compile_args = [arg for arg in args if arg != NXP_VELA_MODEL_FLAG]
+    embed_nxp_model = len(compile_args) != len(args)
 
     def run(dir: str) -> bytes:
         tosaname = "out.tosa"
@@ -80,13 +86,16 @@ def vela_compile(
         with open(tosa_path, "wb") as f:
             f.write(tosa_flatbuffer)
 
-        # invoke vela
+        # Invoke Vela for the raw command-stream output.
         output_dir = os.path.join(dir, "output")
-        args.append(f"--output-dir={output_dir}")
-        args.append(tosa_path)
+        raw_args = [
+            *compile_args,
+            f"--output-dir={output_dir}",
+            tosa_path,
+        ]
         if verbose:
-            args.append("--verbose-all")
-        vela.main(" ".join(args).split(" "))
+            raw_args.append("--verbose-all")
+        vela.main(raw_args)
 
         np_path = os.path.join(dir, "output", "out_vela.npz")
 
@@ -114,25 +123,27 @@ def vela_compile(
             bin_blocks["inputs"] = vela_bin_pack_io("input", data)
             bin_blocks["outputs"] = vela_bin_pack_io("output", data)
 
-            tflite_path = os.path.join(output_dir, "out_vela.tflite")
-            if not os.path.exists(tflite_path):
+            if embed_nxp_model:
                 tflite_dir = os.path.join(dir, "output_tflite")
                 tflite_args = [
                     arg
-                    for arg in args
+                    for arg in compile_args
                     if not arg.startswith("--output-format")
                     and not arg.startswith("--output-dir")
                 ]
-                tflite_args.append("--output-format=tflite")
-                tflite_args.append(f"--output-dir={tflite_dir}")
-                try:
-                    vela.main(" ".join(tflite_args).split(" "))
-                    tflite_path = os.path.join(tflite_dir, "out_vela.tflite")
-                except Exception:
-                    pass
-            if os.path.exists(tflite_path):
-                with open(tflite_path, "rb") as tf:
-                    bin_blocks["vela_model"] = tf.read()
+                tflite_args.extend(
+                    [
+                        "--output-format=tflite",
+                        f"--output-dir={tflite_dir}",
+                        tosa_path,
+                    ]
+                )
+                vela.main(tflite_args)
+                tflite_path = os.path.join(tflite_dir, "out_vela.tflite")
+                if not os.path.isfile(tflite_path):
+                    raise RuntimeError("Vela did not produce the NXP TFLite model.")
+                with open(tflite_path, "rb") as tflite_file:
+                    bin_blocks["vela_model"] = tflite_file.read()
 
             bin_blocks["vela_end_stream"] = b""
 

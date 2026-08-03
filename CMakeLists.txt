@@ -737,7 +737,10 @@ if(EXECUTORCH_BUILD_ARM_BAREMETAL
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/backends/arm)
 endif()
 
-if(EXECUTORCH_BUILD_ARM_BAREMETAL)
+if(EXECUTORCH_BUILD_ARM_BAREMETAL
+   OR EXECUTORCH_BUILD_ARM_ETHOSU_LINUX
+   OR EXECUTORCH_BUILD_ARM_ETHOSU_IMX
+)
   list(APPEND _executorch_backends executorch_delegate_ethos_u)
 endif()
 

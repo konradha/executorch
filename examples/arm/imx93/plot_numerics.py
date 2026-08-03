@@ -10,17 +10,19 @@ import numpy as np
 
 
 def configure_style():
-    plt.rcParams.update({
-        "font.family": "DejaVu Sans",
-        "font.size": 10,
-        "axes.grid": True,
-        "grid.alpha": 0.35,
-        "grid.linestyle": ":",
-        "axes.spines.top": False,
-        "axes.spines.right": False,
-        "figure.dpi": 160,
-        "savefig.dpi": 200,
-    })
+    plt.rcParams.update(
+        {
+            "font.family": "DejaVu Sans",
+            "font.size": 10,
+            "axes.grid": True,
+            "grid.alpha": 0.35,
+            "grid.linestyle": ":",
+            "axes.spines.top": False,
+            "axes.spines.right": False,
+            "figure.dpi": 160,
+            "savefig.dpi": 200,
+        }
+    )
 
 
 def plot_cosine_and_rmse(records, output_dir):
@@ -37,24 +39,38 @@ def plot_cosine_and_rmse(records, output_dir):
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5), constrained_layout=True)
 
     # Cosine similarity
-    labels = [f"{m}\n({l})" for m, l in zip(models, layouts)]
+    labels = [
+        f"{model}\n({layout})" for model, layout in zip(models, layouts, strict=True)
+    ]
     colors = ["#2166ac" if t else "#b2182b" for t in top1]
     bars = ax1.bar(labels, cosines, color=colors)
     ax1.set_ylabel("Cosine similarity (device vs host quantized)")
     ax1.set_ylim(0, 1.05)
     ax1.axhline(y=0.95, color="#999", linestyle="--", alpha=0.5, label="0.95 threshold")
     ax1.legend(frameon=False, fontsize=8)
-    for bar, val in zip(bars, cosines):
-        ax1.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
-                 f"{val:.3f}", ha="center", va="bottom", fontsize=8)
+    for bar, val in zip(bars, cosines, strict=True):
+        ax1.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.01,
+            f"{val:.3f}",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
 
     # RMSE
     bars2 = ax2.bar(labels, rmses, color=colors)
     ax2.set_ylabel("RMSE (device vs host quantized)")
     ax2.set_yscale("log")
-    for bar, val in zip(bars2, rmses):
-        ax2.text(bar.get_x() + bar.get_width() / 2, bar.get_height() * 1.1,
-                 f"{val:.3f}", ha="center", va="bottom", fontsize=8)
+    for bar, val in zip(bars2, rmses, strict=True):
+        ax2.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() * 1.1,
+            f"{val:.3f}",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
 
     fig.suptitle("Device vs Host Quantized Numerics (blue=top-1 match, red=mismatch)")
     fig.savefig(output_dir / "numerics_cosine_rmse.png")
@@ -108,7 +124,9 @@ def plot_ab_comparison(records, output_dir):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--summary", nargs="+", required=True, help="summary.json files")
+    parser.add_argument(
+        "--summary", nargs="+", required=True, help="summary.json files"
+    )
     parser.add_argument("--output_dir", type=Path, required=True)
     args = parser.parse_args()
 

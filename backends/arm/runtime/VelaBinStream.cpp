@@ -20,89 +20,204 @@ namespace executorch {
 namespace backends {
 namespace arm {
 
-// get next mul of 16 ptr, return n if already aligned
-static uintptr_t next_mul_16(uintptr_t n) {
-  return ((n - 1) | 15) + 1;
+// Each header and payload starts on a 16-byte boundary. arm_vela.py emits the
+// same padding, and the firmware command stream requires this alignment.
+constexpr size_t kVelaBlockAlignment = 16;
+
+bool block_name_is(const VelaBinBlock& block, const char* expected) {
+  const size_t length = std::strlen(expected);
+  return length <= kVelaBlockNameLength &&
+      std::memcmp(block.name, expected, length) == 0 &&
+      (length == kVelaBlockNameLength || block.name[length] == '\0');
+}
+
+bool next_block(
+    const char** cursor,
+    const char* end,
+    const VelaBinBlock** block) {
+  const size_t remaining = static_cast<size_t>(end - *cursor);
+  if (remaining < sizeof(VelaBinBlock)) {
+    ET_LOG(Error, "Truncated block header in vela_bin_stream");
+    return false;
+  }
+
+  const auto* candidate = reinterpret_cast<const VelaBinBlock*>(*cursor);
+  const size_t padded_size =
+      (static_cast<size_t>(candidate->size) + kVelaBlockAlignment - 1) &
+      ~(kVelaBlockAlignment - 1);
+  if (padded_size > remaining - sizeof(VelaBinBlock)) {
+    ET_LOG(
+        Error,
+        "Block %.16s extends past the end of vela_bin_stream",
+        candidate->name);
+    return false;
+  }
+
+  *cursor += sizeof(VelaBinBlock) + padded_size;
+  *block = candidate;
+  return true;
+}
+
+bool validate_io_block(const VelaBinBlock& block) {
+  if (block.size < sizeof(int)) {
+    return false;
+  }
+
+  int count = 0;
+  std::memcpy(&count, block.data, sizeof(count));
+  if (count < 0) {
+    return false;
+  }
+  const size_t maximum_count = (block.size - sizeof(int)) / sizeof(VelaIO);
+  return static_cast<size_t>(count) <= maximum_count;
+}
+bool mark_block_seen(bool* seen, const char* name) {
+  if (*seen) {
+    ET_LOG(Error, "Duplicate %s block in vela_bin_stream", name);
+    return false;
+  }
+  *seen = true;
+  return true;
 }
 
 bool vela_bin_validate(const char* data, int size) {
-  const char* foot = data + size - sizeof(VelaBinBlock);
-
-  // Check 16 byte alignment
-  bool valid = true;
-  if ((uintptr_t)data != next_mul_16((uintptr_t)data)) {
-    ET_LOG(Error, "Vela bin ptr not aligned to 16 bytes: %p", data);
-    valid = false;
+  if (data == nullptr || size < static_cast<int>(2 * sizeof(VelaBinBlock))) {
+    ET_LOG(Error, "vela_bin_stream is null or too small");
+    return false;
   }
-  if ((uintptr_t)foot != next_mul_16((uintptr_t)foot)) {
-    ET_LOG(Error, "End of vela bin not aligned to 16 bytes: %p", foot);
-    valid = false;
+  if (reinterpret_cast<uintptr_t>(data) % kVelaBlockAlignment != 0) {
+    ET_LOG(Error, "Vela bin pointer is not aligned to 16 bytes: %p", data);
+    return false;
   }
-  // Check header and footer blocks are the right format
-  if (strncmp(data, "vela_bin_stream", strlen("vela_bin_stream")) != 0) {
-    ET_LOG(Error, "Incorrect header in vela_bin_stream");
-    valid = false;
-  }
-  if (strncmp(foot, "vela_end_stream", strlen("vela_end_stream")) != 0) {
-    ET_LOG(Error, "Incorrect footer in vela_bin_stream");
-    valid = false;
+  if (static_cast<size_t>(size) % kVelaBlockAlignment != 0) {
+    ET_LOG(Error, "Vela bin size is not aligned to 16 bytes: %d", size);
+    return false;
   }
 
-  return valid;
-}
-
-bool vela_bin_read(const char* data, VelaHandles* handles, int size) {
-  const char* ptr = data;
-
-  handles->vela_model_data = nullptr;
-  handles->vela_model_size = 0;
-
-  while (ptr - data < size) {
-    VelaBinBlock* b = reinterpret_cast<VelaBinBlock*>(const_cast<char*>(ptr));
-    ptr += sizeof(VelaBinBlock) + next_mul_16(b->size);
-
-    if (!strncmp(b->name, "vela_bin_stream", strlen("vela_bin_stream"))) {
-      // expect vela_bin_stream first
-      if (reinterpret_cast<char*>(b) !=
-          reinterpret_cast<char*>(const_cast<char*>(data)))
-        return false;
-    } else if (!strncmp(b->name, "cmd_data", strlen("cmd_data"))) {
-      // This driver magic header confirms a valid command stream in binary
-      if (strncmp(b->data, "COP1", strlen("COP1")) &&
-          strncmp(b->data, "COP2", strlen("COP2"))) {
+  const char* cursor = data;
+  const char* const end = data + size;
+  bool first = true;
+  bool saw_cmd_data = false;
+  bool saw_weight_data = false;
+  bool saw_scratch_size = false;
+  bool saw_inputs = false;
+  bool saw_outputs = false;
+  bool saw_vela_model = false;
+  while (cursor < end) {
+    const VelaBinBlock* block = nullptr;
+    if (!next_block(&cursor, end, &block)) {
+      return false;
+    }
+    if (first) {
+      first = false;
+      if (!block_name_is(*block, "vela_bin_stream")) {
+        ET_LOG(Error, "Incorrect header in vela_bin_stream");
         return false;
       }
-      handles->cmd_data = b->data;
-      handles->cmd_data_size = b->size;
-    } else if (!strncmp(b->name, "weight_data", strlen("weight_data"))) {
-      handles->weight_data = b->data;
-      handles->weight_data_size = b->size;
-    } else if (!strncmp(b->name, "scratch_size", strlen("scratch_size"))) {
-      const uint32_t* scratch_size_ptr =
-          reinterpret_cast<const uint32_t*>(b->data);
-      handles->scratch_data_size = *scratch_size_ptr;
-    } else if (!strncmp(b->name, "inputs", strlen("inputs"))) {
-      handles->inputs = reinterpret_cast<VelaIOs*>(b->data);
-    } else if (!strncmp(b->name, "outputs", strlen("outputs"))) {
-      handles->outputs = reinterpret_cast<VelaIOs*>(b->data);
-    } else if (!strncmp(b->name, "vela_model", strlen("vela_model"))) {
-      handles->vela_model_data = b->data;
-      handles->vela_model_size = b->size;
-    } else if (!strncmp(
-                   b->name, "vela_end_stream", strlen("vela_end_stream"))) {
-      // expect vela_end_stream last
-      if (ptr - data != size) {
-        ET_LOG(Error, "Expected vela binary to end with vela_end_stream");
+    }
+
+    // COP1 and COP2 are the command-stream magic values from the Ethos-U
+    // driver ABI. Vela writes one of them at the start of cmd_data.
+    if (block_name_is(*block, "vela_bin_stream")) {
+      if (reinterpret_cast<const char*>(block) != data) {
+        ET_LOG(Error, "Duplicate header in vela_bin_stream");
+        return false;
+      }
+    } else if (block_name_is(*block, "cmd_data")) {
+      if (!mark_block_seen(&saw_cmd_data, "cmd_data") || block->size < 4 ||
+          (std::memcmp(block->data, "COP1", 4) != 0 &&
+           std::memcmp(block->data, "COP2", 4) != 0)) {
+        ET_LOG(Error, "Invalid command data in vela_bin_stream");
+        return false;
+      }
+    } else if (block_name_is(*block, "weight_data")) {
+      if (!mark_block_seen(&saw_weight_data, "weight_data")) {
+        return false;
+      }
+    } else if (block_name_is(*block, "scratch_size")) {
+      if (!mark_block_seen(&saw_scratch_size, "scratch_size") ||
+          block->size < sizeof(uint32_t)) {
+        ET_LOG(Error, "Invalid scratch_size block in vela_bin_stream");
+        return false;
+      }
+    } else if (block_name_is(*block, "inputs")) {
+      if (!mark_block_seen(&saw_inputs, "inputs") ||
+          !validate_io_block(*block)) {
+        ET_LOG(Error, "Invalid inputs block in vela_bin_stream");
+        return false;
+      }
+    } else if (block_name_is(*block, "outputs")) {
+      if (!mark_block_seen(&saw_outputs, "outputs") ||
+          !validate_io_block(*block)) {
+        ET_LOG(Error, "Invalid outputs block in vela_bin_stream");
+        return false;
+      }
+    } else if (block_name_is(*block, "vela_model")) {
+      if (!mark_block_seen(&saw_vela_model, "vela_model")) {
+        return false;
+      }
+    } else if (block_name_is(*block, "vela_end_stream")) {
+      if (cursor != end) {
+        ET_LOG(Error, "vela_end_stream is not the final block");
+        return false;
+      }
+      if (!(saw_cmd_data && saw_weight_data && saw_scratch_size && saw_inputs &&
+            saw_outputs)) {
+        ET_LOG(Error, "vela_bin_stream is missing a required block");
         return false;
       }
       return true;
-    } else {
-      // Skip unrecognized blocks for forward compatibility.
-      ET_LOG(Debug, "Skipping unknown block in vela_bin_stream: %.16s", b->name);
     }
   }
 
-  // We've fallen off the end without finding vela_end_stream
+  ET_LOG(Error, "vela_bin_stream has no footer");
+  return false;
+}
+
+bool vela_bin_read(const char* data, VelaHandles* handles, int size) {
+  if (handles == nullptr || !vela_bin_validate(data, size)) {
+    return false;
+  }
+  *handles = {};
+
+  const char* cursor = data;
+  const char* const end = data + size;
+  while (cursor < end) {
+    const VelaBinBlock* block = nullptr;
+    if (!next_block(&cursor, end, &block)) {
+      return false;
+    }
+
+    if (block_name_is(*block, "vela_bin_stream")) {
+      if (reinterpret_cast<const char*>(block) != data) {
+        return false;
+      }
+    } else if (block_name_is(*block, "cmd_data")) {
+      handles->cmd_data = block->data;
+      handles->cmd_data_size = block->size;
+    } else if (block_name_is(*block, "weight_data")) {
+      handles->weight_data = block->data;
+      handles->weight_data_size = block->size;
+    } else if (block_name_is(*block, "scratch_size")) {
+      std::memcpy(&handles->scratch_data_size, block->data, sizeof(uint32_t));
+    } else if (block_name_is(*block, "inputs")) {
+      handles->inputs =
+          reinterpret_cast<VelaIOs*>(const_cast<char*>(block->data));
+    } else if (block_name_is(*block, "outputs")) {
+      handles->outputs =
+          reinterpret_cast<VelaIOs*>(const_cast<char*>(block->data));
+    } else if (block_name_is(*block, "vela_model")) {
+      handles->vela_model_data = block->data;
+      handles->vela_model_size = block->size;
+    } else if (block_name_is(*block, "vela_end_stream")) {
+      return cursor == end;
+    } else {
+      ET_LOG(
+          Debug,
+          "Skipping unknown block in vela_bin_stream: %.16s",
+          block->name);
+    }
+  }
   return false;
 }
 

@@ -14,7 +14,6 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
-import subprocess
 import sys
 import traceback
 from pathlib import Path
@@ -30,12 +29,19 @@ if str(_EXECUTORCH_DIR) not in sys.path:
     sys.path.insert(0, str(_EXECUTORCH_DIR))
 
 from backends.arm.scripts import aot_arm_compiler
-from examples.arm.imx93.export_and_verify import (
-    DEFAULT_COMPILER_FLAGS, DEFAULT_MEMORY_MODE, DEFAULT_SYSTEM_CONFIG,
-    detect_quantized_ops_library, strip_export_guards,
-)
 from examples.arm.imx93.device_numerics_test import (
-    ssh_cmd, scp_to, scp_from, REMOTE_DIR, REMOTE_RUNNER, SSH_OPTIONS, SSH_TARGET,
+    REMOTE_DIR,
+    REMOTE_RUNNER,
+    scp_from,
+    scp_to,
+    ssh_cmd,
+)
+from examples.arm.imx93.export_and_verify import (
+    DEFAULT_COMPILER_FLAGS,
+    DEFAULT_MEMORY_MODE,
+    DEFAULT_SYSTEM_CONFIG,
+    detect_quantized_ops_library,
+    strip_export_guards,
 )
 
 
@@ -51,20 +57,26 @@ def _pat(shape, lo=-1.0, hi=1.0):
 # module_factory(size) -> nn.Module
 # input_factory(size) -> tuple[Tensor, ...]
 
+
 def _unary_module(fn):
     class M(torch.nn.Module):
         def forward(self, x):
             return fn(x)
+
     return lambda size: M()
+
 
 def _binary_module(fn):
     class M(torch.nn.Module):
         def forward(self, a, b):
             return fn(a, b)
+
     return lambda size: M()
+
 
 def _4d_input(size, channels=8, lo=0.0, hi=1.0):
     return (_pat((1, channels, size, size), lo, hi),)
+
 
 def _4d_pair(size, channels=4, lo=-1.0, hi=1.0):
     return (
@@ -72,8 +84,10 @@ def _4d_pair(size, channels=4, lo=-1.0, hi=1.0):
         _pat((1, channels, size, size), 0.0, hi),
     )
 
+
 def _2d_input(size, lo=-1.0, hi=1.0):
     return (_pat((size, size), lo, hi),)
+
 
 def _make_conv2d(size):
     m = torch.nn.Sequential(
@@ -83,6 +97,7 @@ def _make_conv2d(size):
     m.eval()
     return m
 
+
 def _make_conv_transpose2d(size):
     m = torch.nn.Sequential(
         torch.nn.ConvTranspose2d(8, 16, 3, padding=1, bias=True),
@@ -91,14 +106,18 @@ def _make_conv_transpose2d(size):
     m.eval()
     return m
 
+
 def _make_linear(size):
     class M(torch.nn.Module):
         def __init__(self):
             super().__init__()
             self.fc = torch.nn.Linear(size, size)
+
         def forward(self, x):
             return self.fc(x)
+
     return M()
+
 
 def _make_pool(pool_cls):
     def factory(size):
@@ -106,36 +125,47 @@ def _make_pool(pool_cls):
             def __init__(self):
                 super().__init__()
                 self.pool = pool_cls(3, stride=2, padding=1)
+
             def forward(self, x):
                 return self.pool(x)
+
         return M()
+
     return factory
+
 
 def _make_adaptive_avg_pool(size):
     class M(torch.nn.Module):
         def __init__(self):
             super().__init__()
             self.pool = torch.nn.AdaptiveAvgPool2d(1)
+
         def forward(self, x):
             return self.pool(x)
+
     return M()
+
 
 def _make_depthwise(size):
     m = torch.nn.Conv2d(8, 8, 3, padding=1, groups=8, bias=True)
     m.eval()
     return m
 
+
 class MeanDimModule(torch.nn.Module):
     def forward(self, x):
         return x.mean(dim=[2, 3], keepdim=True)
+
 
 class ClampModule(torch.nn.Module):
     def forward(self, x):
         return torch.clamp(x, -0.5, 0.5)
 
+
 class HardtanhModule(torch.nn.Module):
     def forward(self, x):
         return torch.nn.functional.hardtanh(x)
+
 
 OP_REGISTRY = {
     # arithmetic
@@ -146,41 +176,46 @@ OP_REGISTRY = {
     "neg": (_unary_module(torch.neg), lambda s: _4d_input(s, lo=-1, hi=1)),
     "maximum": (_binary_module(torch.maximum), _4d_pair),
     "minimum": (_binary_module(torch.minimum), _4d_pair),
-
     # activation
     "relu": (_unary_module(torch.relu), lambda s: _4d_input(s, lo=-2, hi=2)),
     "sigmoid": (_unary_module(torch.sigmoid), lambda s: _4d_input(s, lo=-6, hi=6)),
     "tanh": (_unary_module(torch.tanh), lambda s: _4d_input(s, lo=-3, hi=3)),
     "hardtanh": (lambda s: HardtanhModule(), lambda s: _4d_input(s, lo=-2, hi=2)),
-    "hardsigmoid": (_unary_module(torch.nn.functional.hardsigmoid), lambda s: _4d_input(s, lo=-4, hi=4)),
-    "hardswish": (_unary_module(torch.nn.functional.hardswish), lambda s: _4d_input(s, lo=-4, hi=4)),
-    "elu": (_unary_module(lambda x: torch.nn.functional.elu(x)), lambda s: _4d_input(s, lo=-3, hi=3)),
-    "silu": (_unary_module(torch.nn.functional.silu), lambda s: _4d_input(s, lo=-4, hi=4)),
-
+    "hardsigmoid": (
+        _unary_module(torch.nn.functional.hardsigmoid),
+        lambda s: _4d_input(s, lo=-4, hi=4),
+    ),
+    "hardswish": (
+        _unary_module(torch.nn.functional.hardswish),
+        lambda s: _4d_input(s, lo=-4, hi=4),
+    ),
+    "elu": (
+        _unary_module(lambda x: torch.nn.functional.elu(x)),
+        lambda s: _4d_input(s, lo=-3, hi=3),
+    ),
+    "silu": (
+        _unary_module(torch.nn.functional.silu),
+        lambda s: _4d_input(s, lo=-4, hi=4),
+    ),
     # convolution
     "conv2d": (_make_conv2d, lambda s: _4d_input(s)),
     "depthwise_conv2d": (_make_depthwise, lambda s: _4d_input(s)),
     "conv_transpose2d": (_make_conv_transpose2d, lambda s: _4d_input(s)),
-
     # pooling
     "avg_pool2d": (_make_pool(torch.nn.AvgPool2d), lambda s: _4d_input(s)),
     "max_pool2d": (_make_pool(torch.nn.MaxPool2d), lambda s: _4d_input(s)),
     "adaptive_avg_pool2d": (_make_adaptive_avg_pool, lambda s: _4d_input(s)),
-
     # linear
     "linear": (_make_linear, _2d_input),
-
     # reduction
     "mean_dim": (lambda s: MeanDimModule(), lambda s: _4d_input(s)),
     "clamp": (lambda s: ClampModule(), lambda s: _4d_input(s, lo=-2, hi=2)),
-
     # math (unary, use TABLE on NPU)
     "exp": (_unary_module(torch.exp), lambda s: _4d_input(s, lo=-2, hi=2)),
     "log": (_unary_module(torch.log), lambda s: _4d_input(s, lo=0.1, hi=5)),
     "ceil": (_unary_module(torch.ceil), lambda s: _4d_input(s, lo=-3, hi=3)),
     "floor": (_unary_module(torch.floor), lambda s: _4d_input(s, lo=-3, hi=3)),
     "rsqrt": (_unary_module(torch.rsqrt), lambda s: _4d_input(s, lo=0.1, hi=5)),
-
     # comparison (return bool, may not delegate)
     "eq": (_binary_module(torch.eq), _4d_pair),
     "gt": (_binary_module(torch.gt), _4d_pair),
@@ -219,7 +254,6 @@ def test_op(op_name, size, output_dir):
             float_out = model(*inputs)
         if isinstance(float_out, tuple):
             float_out = float_out[0]
-        float_np = float_out.detach().numpy().flatten().astype(np.float64)
         record["float_dtype"] = str(float_out.dtype)
     except Exception as e:
         record["status"] = "float_failed"
@@ -254,13 +288,14 @@ def test_op(op_name, size, output_dir):
     op_dir = output_dir / f"{op_name}_{size}"
     op_dir.mkdir(parents=True, exist_ok=True)
     try:
-        from executorch.exir import to_edge_transform_and_lower, EdgeCompileConfig
         from executorch.backends.arm.ethosu import EthosUPartitioner
+        from executorch.exir import EdgeCompileConfig, to_edge_transform_and_lower
 
         # Load quantized ops library if available
         qops = detect_quantized_ops_library()
         if qops:
             import ctypes as _ctypes
+
             try:
                 _ctypes.cdll.LoadLibrary(qops)
             except OSError:
@@ -280,7 +315,11 @@ def test_op(op_name, size, output_dir):
                 n_delegate += 1
             elif node.op == "call_function":
                 name = str(node.target)
-                if "getitem" not in name and "quantize" not in name and "dequantize" not in name:
+                if (
+                    "getitem" not in name
+                    and "quantize" not in name
+                    and "dequantize" not in name
+                ):
                     cpu_ops.append(name)
 
         record["n_delegate_segments"] = n_delegate
@@ -407,8 +446,13 @@ def main():
             sys.stdout.flush()
             try:
                 record = test_op(op_name, size, args.output)
-            except Exception as e:
-                record = {"op": op_name, "size": size, "status": "crash", "error": traceback.format_exc()[-300:]}
+            except Exception:
+                record = {
+                    "op": op_name,
+                    "size": size,
+                    "status": "crash",
+                    "error": traceback.format_exc()[-300:],
+                }
             records.append(record)
 
             status = record.get("status", "?")
@@ -425,7 +469,9 @@ def main():
     for op_name in args.ops:
         row = f"{op_name:<22} "
         for size in args.sizes:
-            r = next((r for r in records if r["op"] == op_name and r["size"] == size), None)
+            r = next(
+                (r for r in records if r["op"] == op_name and r["size"] == size), None
+            )
             if r is None:
                 row += f"{'?':<14} "
             else:

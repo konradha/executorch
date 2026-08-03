@@ -17,7 +17,6 @@ import ctypes
 import json
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
@@ -43,7 +42,8 @@ from examples.models.model_factory import EagerModelFactory
 
 SSH_TARGET = "fritz@dev.apparatlabs.com"
 SSH_OPTIONS = [
-    "-o", "ProxyCommand=cloudflared access ssh --hostname dev.apparatlabs.com",
+    "-o",
+    "ProxyCommand=cloudflared access ssh --hostname dev.apparatlabs.com",
 ]
 REMOTE_DIR = "/tmp/imx93-numerics-test"
 REMOTE_RUNNER = "/tmp/imx93-fastpath-bench/executor_runner"
@@ -52,21 +52,27 @@ REMOTE_RUNNER = "/tmp/imx93-fastpath-bench/executor_runner"
 def ssh_cmd(cmd: str, timeout: int = 60) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["ssh", *SSH_OPTIONS, SSH_TARGET, cmd],
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
     )
 
 
 def scp_to(local: str, remote: str) -> None:
     subprocess.run(
         ["scp", *SSH_OPTIONS, local, f"{SSH_TARGET}:{remote}"],
-        check=True, capture_output=True, timeout=120,
+        check=True,
+        capture_output=True,
+        timeout=120,
     )
 
 
 def scp_from(remote: str, local: str) -> None:
     subprocess.run(
         ["scp", *SSH_OPTIONS, f"{SSH_TARGET}:{remote}", local],
-        check=True, capture_output=True, timeout=120,
+        check=True,
+        capture_output=True,
+        timeout=120,
     )
 
 
@@ -86,9 +92,7 @@ def export_and_test(model_name: str, output_dir: Path, channels_last: bool) -> d
     model.eval()
 
     inputs_raw = (
-        (example_inputs[0],)
-        if isinstance(example_inputs, tuple)
-        else (example_inputs,)
+        (example_inputs[0],) if isinstance(example_inputs, tuple) else (example_inputs,)
     )
     has_4d = any(t.dim() == 4 for t in inputs_raw)
 
@@ -125,7 +129,9 @@ def export_and_test(model_name: str, output_dir: Path, channels_last: bool) -> d
         config="Arm/vela.ini",
         extra_compiler_flags=list(DEFAULT_COMPILER_FLAGS),
     )
-    quantized = aot_arm_compiler.quantize(exported_module, model_name, compile_spec, inputs)
+    quantized = aot_arm_compiler.quantize(
+        exported_module, model_name, compile_spec, inputs
+    )
     with torch.no_grad():
         quant_out = quantized(*inputs)
         if isinstance(quant_out, tuple):
@@ -147,11 +153,21 @@ def export_and_test(model_name: str, output_dir: Path, channels_last: bool) -> d
     pte_dir.mkdir(parents=True, exist_ok=True)
 
     export_args = [
-        sys.executable, "-m", "examples.arm.aot_arm_compiler",
-        "-m", model_name, "-t", "ethos-u65-256", "-q", "-d",
-        "-o", str(pte_dir),
-        "--system_config", DEFAULT_SYSTEM_CONFIG,
-        "--memory_mode", DEFAULT_MEMORY_MODE,
+        sys.executable,
+        "-m",
+        "examples.arm.aot_arm_compiler",
+        "-m",
+        model_name,
+        "-t",
+        "ethos-u65-256",
+        "-q",
+        "-d",
+        "-o",
+        str(pte_dir),
+        "--system_config",
+        DEFAULT_SYSTEM_CONFIG,
+        "--memory_mode",
+        DEFAULT_MEMORY_MODE,
     ]
     for flag in DEFAULT_COMPILER_FLAGS:
         export_args.append(f"--extra_compiler_flag={flag}")
@@ -160,14 +176,18 @@ def export_and_test(model_name: str, output_dir: Path, channels_last: bool) -> d
 
     # Find quantized ops library
     from examples.arm.imx93.export_and_verify import detect_quantized_ops_library
+
     qops = detect_quantized_ops_library()
     if qops:
         export_args.extend(["-s", qops])
 
     print(f"  Exporting {model_name} ({tag})...")
     result = subprocess.run(
-        export_args, cwd=str(_EXECUTORCH_DIR),
-        capture_output=True, text=True, timeout=600,
+        export_args,
+        cwd=str(_EXECUTORCH_DIR),
+        capture_output=True,
+        text=True,
+        timeout=600,
     )
     if result.returncode != 0:
         record["status"] = "export_failed"
@@ -206,7 +226,7 @@ def export_and_test(model_name: str, output_dir: Path, channels_last: bool) -> d
         f"--num_executions=1 "
         f"--output_file={remote_out_prefix}"
     )
-    print(f"  Running on device...")
+    print("  Running on device...")
     result = ssh_cmd(run_cmd, timeout=120)
     combined = (result.stdout or "") + (result.stderr or "")
 
@@ -231,7 +251,7 @@ def export_and_test(model_name: str, output_dir: Path, channels_last: bool) -> d
         record["status"] = "no_output"
         return record
 
-    local_out = pte_dir / f"device_out.bin"
+    local_out = pte_dir / "device_out.bin"
     scp_from(remote_files[0].strip(), str(local_out))
 
     # 8. Compare
@@ -281,12 +301,19 @@ def export_and_test(model_name: str, output_dir: Path, channels_last: bool) -> d
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--models", nargs="+", default=["mv2", "resnet18", "resnet50", "ic3"])
+    parser.add_argument(
+        "--models", nargs="+", default=["mv2", "resnet18", "resnet50", "ic3"]
+    )
     parser.add_argument("--output", type=Path, default=Path("/tmp/fastpath-numerics"))
     parser.add_argument("--channels-last", action="store_true", default=True)
-    parser.add_argument("--no-channels-last", dest="channels_last", action="store_false")
-    parser.add_argument("--both-layouts", action="store_true",
-                        help="Test both NCHW and channels_last for each model")
+    parser.add_argument(
+        "--no-channels-last", dest="channels_last", action="store_false"
+    )
+    parser.add_argument(
+        "--both-layouts",
+        action="store_true",
+        help="Test both NCHW and channels_last for each model",
+    )
     args = parser.parse_args()
 
     args.output.mkdir(parents=True, exist_ok=True)
@@ -297,13 +324,18 @@ def main():
     for model_name in args.models:
         for cl in layouts:
             tag = "clast" if cl else "nchw"
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"Model: {model_name}, layout: {tag}")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
             try:
                 record = export_and_test(model_name, args.output, cl)
             except Exception as e:
-                record = {"model": model_name, "layout": tag, "status": "error", "error": str(e)}
+                record = {
+                    "model": model_name,
+                    "layout": tag,
+                    "status": "error",
+                    "error": str(e),
+                }
                 print(f"  ERROR: {e}")
             records.append(record)
 
@@ -312,14 +344,16 @@ def main():
     print(f"\nSummary: {summary_path}")
 
     # Print table
-    print(f"\n{'Model':<12} {'Layout':<6} {'Status':<8} {'Dev':<6} {'Quant':<6} {'Float':<6} {'RMSE_q':<8} {'Cos_q':<8} {'Top1_q'}")
+    print(
+        f"\n{'Model':<12} {'Layout':<6} {'Status':<8} {'Dev':<6} {'Quant':<6} {'Float':<6} {'RMSE_q':<8} {'Cos_q':<8} {'Top1_q'}"
+    )
     print("-" * 80)
     for r in records:
         print(
-            f"{r['model']:<12} {r.get('layout','?'):<6} {r.get('status','?'):<8} "
-            f"{r.get('device_argmax','?'):<6} {r.get('quant_argmax','?'):<6} "
-            f"{r.get('float_argmax','?'):<6} {r.get('rmse_vs_quant','?'):<8} "
-            f"{r.get('cosine_vs_quant','?'):<8} {r.get('top1_match_quant','?')}"
+            f"{r['model']:<12} {r.get('layout', '?'):<6} {r.get('status', '?'):<8} "
+            f"{r.get('device_argmax', '?'):<6} {r.get('quant_argmax', '?'):<6} "
+            f"{r.get('float_argmax', '?'):<6} {r.get('rmse_vs_quant', '?'):<8} "
+            f"{r.get('cosine_vs_quant', '?'):<8} {r.get('top1_match_quant', '?')}"
         )
 
 

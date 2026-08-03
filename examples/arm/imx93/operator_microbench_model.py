@@ -149,7 +149,9 @@ def build_case(case_name: str, size: int):
     if case_name == "pad":
         return PadModule(), _single_input(size)
     if case_name == "prelu":
-        return _with_seed(PReLUModule), (_pattern((1, 6, size, size), start=-2.0, end=2.0),)
+        return _with_seed(PReLUModule), (
+            _pattern((1, 6, size, size), start=-2.0, end=2.0),
+        )
     if case_name == "reshape":
         return ReshapeModule(size), (_pattern((size, size), start=-1.0, end=1.0),)
     if case_name == "resize_bilinear":

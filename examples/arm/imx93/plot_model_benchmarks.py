@@ -96,7 +96,11 @@ def _plot_match_bars(df: pd.DataFrame, path: Path) -> None:
 def _plot_status(df: pd.DataFrame, path: Path) -> None:
     fig, ax = plt.subplots(figsize=(7.6, 3.8), constrained_layout=True)
     ordered = df.sort_values("params_millions")
-    colors = ordered["status"].map({"ok": "#2166ac", "run_failed": "#b2182b"}).fillna("#ef8a62")
+    colors = (
+        ordered["status"]
+        .map({"ok": "#2166ac", "run_failed": "#b2182b"})
+        .fillna("#ef8a62")
+    )
     values = ordered["status"].eq("ok").astype(int)
     ax.bar(ordered["model"], values, color=colors)
     ax.set_ylim(0, 1.05)

@@ -20,10 +20,14 @@ if _EXECUTORCH_DIR_STR not in sys.path:
 
 import numpy as np
 import torch
-from torch import export as torch_export
-
-from backends.arm.test.runner_utils import TosaReferenceModelDispatch
 from backends.arm.scripts import aot_arm_compiler as arm_aot_compiler
+from backends.arm.test.runner_utils import TosaReferenceModelDispatch
+from examples.arm.imx93.export_and_verify import (
+    DEFAULT_COMPILER_FLAGS,
+    DEFAULT_MEMORY_MODE,
+    DEFAULT_SYSTEM_CONFIG,
+    strip_export_guards,
+)
 from examples.arm.imx93.operator_benchmarks import (
     BENCH_OPS,
     build_ssh_command,
@@ -32,15 +36,9 @@ from examples.arm.imx93.operator_benchmarks import (
     parse_runner_output,
     trim_output,
 )
-from examples.arm.imx93.export_and_verify import (
-    DEFAULT_COMPILER_FLAGS,
-    DEFAULT_MEMORY_MODE,
-    DEFAULT_SYSTEM_CONFIG,
-    DEFAULT_TARGET,
-    strip_export_guards,
-)
 from examples.arm.imx93.operator_microbench_model import build_case, execution_inputs
 from examples.arm.imx93.supported_ops import ARM_TFLITE_CONSTRAINT_HINTS
+from torch import export as torch_export
 
 
 DEFAULT_SWEEP_OPS = BENCH_OPS
@@ -113,8 +111,16 @@ def _compare_outputs(host_outputs, local_prefix: Path) -> dict[str, float | int]
         max_abs_error = max(max_abs_error, float(np.max(np.abs(diff))))
         rmse_sum += float(np.sum(diff * diff))
         value_count += int(diff.size)
-        host_min = float(np.min(host)) if host_min is None else min(host_min, float(np.min(host)))
-        host_max = float(np.max(host)) if host_max is None else max(host_max, float(np.max(host)))
+        host_min = (
+            float(np.min(host))
+            if host_min is None
+            else min(host_min, float(np.min(host)))
+        )
+        host_max = (
+            float(np.max(host))
+            if host_max is None
+            else max(host_max, float(np.max(host)))
+        )
         host_float = host.astype(np.float64)
         host_sum += float(np.sum(host_float))
         host_sq_sum += float(np.sum(host_float * host_float))
@@ -122,7 +128,9 @@ def _compare_outputs(host_outputs, local_prefix: Path) -> dict[str, float | int]
     host_mean = host_sum / max(value_count, 1)
     host_var = max(host_sq_sum / max(value_count, 1) - host_mean * host_mean, 0.0)
     host_std = host_var**0.5
-    host_range = (host_max - host_min) if host_min is not None and host_max is not None else 0.0
+    host_range = (
+        (host_max - host_min) if host_min is not None and host_max is not None else 0.0
+    )
     return {
         "output_tensors": len(host_tensors),
         "output_elements": value_count,
@@ -206,7 +214,9 @@ def _load_device_tensor(local_file: Path, host_tensor: torch.Tensor) -> np.ndarr
     raw = local_file.read_bytes()
     itemsize = np.dtype(device_dtype).itemsize
     strides = tuple(int(stride) * itemsize for stride in host_tensor.stride())
-    return np.ndarray(shape=host.shape, dtype=device_dtype, buffer=raw, strides=strides).copy()
+    return np.ndarray(
+        shape=host.shape, dtype=device_dtype, buffer=raw, strides=strides
+    ).copy()
 
 
 def _ensure_remote_runner(
@@ -258,7 +268,9 @@ def _run_remote_capture(
         remote_input_path = (
             f"{remote_dir.rstrip('/')}/{op_name}-{size}-input-{index}.bin"
         )
-        _scp_with_options(str(local_input_path), f"{ssh_target}:{remote_input_path}", ssh_options)
+        _scp_with_options(
+            str(local_input_path), f"{ssh_target}:{remote_input_path}", ssh_options
+        )
         remote_inputs.append(remote_input_path)
     remote_command = " ".join(
         [
@@ -273,7 +285,9 @@ def _run_remote_capture(
             f"--output_file={shlex.quote(remote_prefix)}",
         ]
     )
-    result = _run_with_retries(build_ssh_command(ssh_target, remote_command, ssh_options))
+    result = _run_with_retries(
+        build_ssh_command(ssh_target, remote_command, ssh_options)
+    )
     remote_list = _run_with_retries(
         build_ssh_command(
             ssh_target,
@@ -332,9 +346,11 @@ def _measure_case(
     record["pte"] = str(pte_path)
     record["pte_bytes"] = pte_path.stat().st_size
     record.update(parse_export_output(export_output))
-    host_outputs, inputs, quantized_outputs, reference_name = _delegated_reference_outputs(
-        op_name,
-        size,
+    host_outputs, inputs, quantized_outputs, reference_name = (
+        _delegated_reference_outputs(
+            op_name,
+            size,
+        )
     )
     record["input_elements"] = int(sum(int(tensor.numel()) for tensor in inputs))
     record["reference"] = reference_name
@@ -375,7 +391,7 @@ def _reference_delta(lhs_outputs, rhs_outputs) -> dict[str, float]:
     max_abs_error = 0.0
     rmse_sum = 0.0
     value_count = 0
-    for lhs, rhs in zip(lhs_tensors, rhs_tensors):
+    for lhs, rhs in zip(lhs_tensors, rhs_tensors, strict=True):
         lhs_np = lhs.detach().cpu().numpy().astype(np.float64)
         rhs_np = rhs.detach().cpu().numpy().astype(np.float64)
         diff = lhs_np - rhs_np
@@ -410,30 +426,18 @@ def _delegated_reference_outputs(
         config="Arm/vela.ini",
         extra_compiler_flags=list(DEFAULT_COMPILER_FLAGS),
     )
-    quantized = arm_aot_compiler.quantize(exported_module, str(Path(__file__).with_name("operator_microbench_model.py")), compile_spec, inputs)
-    class Args:
-        pass
-
-    args = Args()
-    args.target = REFERENCE_TARGET
-    args.intermediates = None
-    args.system_config = DEFAULT_SYSTEM_CONFIG
-    args.memory_mode = DEFAULT_MEMORY_MODE
-    args.quantize = True
-    args.config = "Arm/vela.ini"
-    args.enable_debug_mode = None
-    args.direct_drive = False
-    args.extra_compiler_flag = list(DEFAULT_COMPILER_FLAGS)
-    args.model_name = str(Path(__file__).with_name("operator_microbench_model.py"))
-    args.evaluate = None
-    args.evaluate_config = None
-    args.strict_export = True
-    args.channels_last_4d = channels_last_4d
-    _, edge = arm_aot_compiler.to_edge_TOSA_delegate(
-        exported,
-        args,
-        exported_module,
-        inputs,
+    model_path = str(Path(__file__).with_name("operator_microbench_model.py"))
+    quantized, edge = arm_aot_compiler.to_edge_tosa_delegate(
+        target=REFERENCE_TARGET,
+        exported_program=exported,
+        compile_spec=compile_spec,
+        model=exported_module,
+        quant_mode=arm_aot_compiler.QuantMode.INT8,
+        example_inputs=inputs,
+        model_name=model_path,
+        strict_export=True,
+        calibration_samples=None,
+        direct_drive=False,
     )
     delegated = edge.exported_program().module()
     with torch.no_grad():

@@ -25,14 +25,10 @@ if str(_EXECUTORCH_DIR) not in sys.path:
 
 from examples.arm.imx93.device_numerics_test import (
     export_and_test,
-    ssh_cmd,
-    scp_to,
-    scp_from,
-    tensor_storage_bytes,
     REMOTE_DIR,
     REMOTE_RUNNER,
-    SSH_OPTIONS,
-    SSH_TARGET,
+    scp_to,
+    ssh_cmd,
 )
 
 MODELS = ["mv2", "resnet18", "resnet50", "ic3"]
@@ -109,8 +105,12 @@ def run_benchmark(model_name: str, output_dir: Path, num_exec: int) -> dict:
     if cycles:
         record["bench_cycles_mean"] = float(np.mean(cycles))
         record["bench_cycles_std"] = float(np.std(cycles))
-        record["bench_cycles_cv"] = float(np.std(cycles) / np.mean(cycles)) if np.mean(cycles) > 0 else 0
-        record["bench_ms_per_inference"] = float(np.mean(cycles)) / 1000.0  # cycles @ 1GHz = us
+        record["bench_cycles_cv"] = (
+            float(np.std(cycles) / np.mean(cycles)) if np.mean(cycles) > 0 else 0
+        )
+        record["bench_ms_per_inference"] = (
+            float(np.mean(cycles)) / 1000.0
+        )  # cycles @ 1GHz = us
     record.update(timing)
 
     print(
@@ -123,7 +123,9 @@ def run_benchmark(model_name: str, output_dir: Path, num_exec: int) -> dict:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--models", nargs="+", default=MODELS)
-    parser.add_argument("--output", type=Path, default=Path("/tmp/fastpath-bench-final"))
+    parser.add_argument(
+        "--output", type=Path, default=Path("/tmp/fastpath-bench-final")
+    )
     parser.add_argument("--num-executions", type=int, default=NUM_EXECUTIONS)
     args = parser.parse_args()
 
@@ -131,9 +133,9 @@ def main():
     records = []
 
     for model_name in args.models:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"Benchmarking: {model_name}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         try:
             record = run_benchmark(model_name, args.output, args.num_executions)
         except Exception as e:
@@ -145,8 +147,10 @@ def main():
     summary_path.write_text(json.dumps(records, indent=2))
 
     # Print results table
-    print(f"\n{'='*90}")
-    print(f"{'Model':<12} {'Params':<8} {'Top1':<5} {'Cosine':<8} {'RMSE':<8} {'Cycles':<12} {'CV%':<6} {'ms':<8}")
+    print(f"\n{'=' * 90}")
+    print(
+        f"{'Model':<12} {'Params':<8} {'Top1':<5} {'Cosine':<8} {'RMSE':<8} {'Cycles':<12} {'CV%':<6} {'ms':<8}"
+    )
     print("-" * 90)
     for r in records:
         if r.get("status") != "ok":

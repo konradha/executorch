@@ -484,6 +484,7 @@ Error prepare_input_tensors(
         err = Error::InvalidArgument;
       } else if (input_evalues[i].isTensor()) {
         Tensor& tensor = input_evalues[i].toTensor();
+        // Copy the data from the input buffer to the tensor
         std::memcpy(tensor.mutable_data_ptr<int8_t>(), buffer, buffer_size);
       }
     }

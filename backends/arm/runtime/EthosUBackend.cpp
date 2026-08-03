@@ -103,6 +103,10 @@ class EthosUBackend final : public ::executorch::runtime::BackendInterface {
 
     handle->processed = processed;
     handle->platform_state = platform_init(compile_specs, allocator);
+    if (handle->platform_state == nullptr) {
+      delete handle;
+      return Error::MemoryAllocationFailed;
+    }
 
     // Return the same buffer we were passed - this data will be
     // executed directly
@@ -324,11 +328,11 @@ Error copy_with_layout_adjustment(
   }
 
   size_t chunk_count = 1;
-  for (int dim = 0; dim < shapeDim - 1; ++dim) {
+  for (int dim = 0; dim < kVelaShapeDimensions - 1; ++dim) {
     const int vela_dim = output_io.shape[dim];
     chunk_count *= static_cast<size_t>(vela_dim == 0 ? 1 : vela_dim);
   }
-  const int last_dim = output_io.shape[shapeDim - 1];
+  const int last_dim = output_io.shape[kVelaShapeDimensions - 1];
   const size_t vela_chunk_elems =
       static_cast<size_t>(last_dim == 0 ? 1 : last_dim);
   const size_t vela_chunk_size =
@@ -424,8 +428,8 @@ void calculate_dimensions(
     *tensor_count = *tensor_count * tensor.size(i);
   }
 
-  // The VelaIO type has a shape of fixed size 6
-  for (int i = 0; i < shapeDim; i++) {
+  // Vela serializes each I/O shape with a fixed dimension count.
+  for (int i = 0; i < kVelaShapeDimensions; i++) {
     *io_count = *io_count * io->shape[i];
   }
 }

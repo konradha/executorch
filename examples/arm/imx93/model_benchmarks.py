@@ -32,13 +32,16 @@ from examples.arm.imx93.export_and_verify import (
     DEFAULT_SYSTEM_CONFIG,
     strip_export_guards,
 )
-from examples.arm.imx93.operator_benchmarks import build_ssh_command, parse_runner_output
+from examples.arm.imx93.operator_benchmarks import (
+    build_ssh_command,
+    parse_runner_output,
+)
 from examples.models import MODEL_NAME_TO_MODEL
 from examples.models.model_factory import EagerModelFactory
 
 
 REPO_ROOT = _EXECUTORCH_DIR
-DEFAULT_REFERENCE_ROOT = REPO_ROOT.parent / "executorch" / "arm_test" / "models"
+DEFAULT_REFERENCE_ROOT = REPO_ROOT / "arm_test" / "models"
 DEFAULT_MODELS = (
     "mv3",
     "mv2",
@@ -180,23 +183,33 @@ def _load_device_tensor(local_file: Path, host_tensor: torch.Tensor) -> np.ndarr
             8: np.int64 if host.dtype.kind == "i" else np.uint64,
         }.get(bytes_per_element)
     elif host.dtype.kind == "f":
-        device_dtype = {2: np.float16, 4: np.float32, 8: np.float64}.get(bytes_per_element)
+        device_dtype = {2: np.float16, 4: np.float32, 8: np.float64}.get(
+            bytes_per_element
+        )
     elif host.dtype.kind == "b":
         device_dtype = np.bool_ if bytes_per_element == 1 else None
     else:
         device_dtype = None
     if device_dtype is None:
-        raise ValueError(f"Unsupported capture width {bytes_per_element} for {local_file}")
+        raise ValueError(
+            f"Unsupported capture width {bytes_per_element} for {local_file}"
+        )
     raw = local_file.read_bytes()
     itemsize = np.dtype(device_dtype).itemsize
     strides = tuple(int(stride) * itemsize for stride in host_tensor.stride())
-    return np.ndarray(shape=host.shape, dtype=device_dtype, buffer=raw, strides=strides).copy()
+    return np.ndarray(
+        shape=host.shape, dtype=device_dtype, buffer=raw, strides=strides
+    ).copy()
 
 
-def _model_reference(model_name: str) -> tuple[tuple[torch.Tensor, ...], list[torch.Tensor], str] | None:
+def _model_reference(
+    model_name: str,
+) -> tuple[tuple[torch.Tensor, ...], list[torch.Tensor], str] | None:
     if model_name not in MODEL_NAME_TO_MODEL:
         return None
-    model, example_inputs, _, _ = EagerModelFactory.create_model(*MODEL_NAME_TO_MODEL[model_name])
+    model, example_inputs, _, _ = EagerModelFactory.create_model(
+        *MODEL_NAME_TO_MODEL[model_name]
+    )
     model = model.eval()
     model, prepared_inputs = aot_arm_compiler.prepare_model_and_inputs_for_export(
         model,
@@ -214,7 +227,9 @@ def _model_reference(model_name: str) -> tuple[tuple[torch.Tensor, ...], list[to
         config="Arm/vela.ini",
         extra_compiler_flags=list(DEFAULT_COMPILER_FLAGS),
     )
-    quantized = aot_arm_compiler.quantize(exported_module, model_name, compile_spec, inputs)
+    quantized = aot_arm_compiler.quantize(
+        exported_module, model_name, compile_spec, inputs
+    )
     with torch.no_grad():
         outputs = _tensor_sequence(quantized(*inputs))
     return inputs, outputs, "host_quantized_model"

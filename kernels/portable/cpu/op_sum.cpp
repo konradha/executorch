@@ -107,7 +107,7 @@ Tensor& sum_dim_out(
                     [](CTYPE outv, CTYPE acc) { return acc + outv; },
                     out_ix);
               }
-              out_data[out_ix] = sum;
+              out_data[reduction_output_data_index(out, out_ix)] = sum;
             }
           });
       ET_KERNEL_CHECK_MSG(ctx, success, Internal, , "parallel_for failed");
@@ -133,7 +133,8 @@ Tensor& sum_dim_out(
                               [](ACC outv, ACC acc) { return acc + outv; },
                               out_ix);
                         }
-                        out_data[out_ix] = static_cast<CTYPE_OUT>(sum);
+                        out_data[reduction_output_data_index(out, out_ix)] =
+                            static_cast<CTYPE_OUT>(sum);
                       }
                     });
             ET_KERNEL_CHECK_MSG(

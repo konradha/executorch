@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
+import sys
 from collections import defaultdict
 from pathlib import Path
-import sys
 
 _EXECUTORCH_DIR = Path(__file__).resolve().parents[3]
 _EXECUTORCH_DIR_STR = str(_EXECUTORCH_DIR)
@@ -124,10 +124,14 @@ def render_markdown() -> str:
         lines.append(f"### `{op_name}`")
         lines.append("")
         lines.append(f"- TFLite op: `{row['tflite_op']}`")
-        lines.append(f"- Payload emitted: {'yes' if row['delegated_payload'] else 'no'}")
+        lines.append(
+            f"- Payload emitted: {'yes' if row['delegated_payload'] else 'no'}"
+        )
         lines.append(f"- Gap layer: {GAP_LAYER_TITLES[str(row['gap_layer'])]}")
         lines.append(f"- Model guidance: {row['model_guidance']}")
-        lines.append(f"- Fastpath outcome: {' '.join(str(row['observed_notes']).split())}")
+        lines.append(
+            f"- Fastpath outcome: {' '.join(str(row['observed_notes']).split())}"
+        )
         lines.append("- Official U55/U65 constraints:")
         for constraint in row["official_constraints"]:
             lines.append(f"  - {constraint}")

@@ -165,10 +165,8 @@ if(EXECUTORCH_BUILD_ARM_BAREMETAL OR EXECUTORCH_BUILD_ARM_ETHOSU_LINUX
     set(_ethosu_imx_driver_cpp
         "${ETHOSU_IMX_DRIVER_SOURCE_DIR}/driver_library/src/ethosu.cpp"
     )
-    set(_ethosu_imx_flat_cpp "${ETHOSU_IMX_DRIVER_SOURCE_DIR}/ethosu.cpp")
     if(NOT ETHOSU_IMX_DRIVER_SOURCE_DIR
-       OR (NOT EXISTS "${_ethosu_imx_driver_cpp}"
-           AND NOT EXISTS "${_ethosu_imx_flat_cpp}")
+       OR NOT EXISTS "${_ethosu_imx_driver_cpp}"
     )
       include(FetchContent)
       FetchContent_Declare(
@@ -185,41 +183,26 @@ if(EXECUTORCH_BUILD_ARM_BAREMETAL OR EXECUTORCH_BUILD_ARM_ETHOSU_LINUX
       set(_ethosu_imx_driver_cpp
           "${ETHOSU_IMX_DRIVER_SOURCE_DIR}/driver_library/src/ethosu.cpp"
       )
-      set(_ethosu_imx_flat_cpp "${ETHOSU_IMX_DRIVER_SOURCE_DIR}/ethosu.cpp")
     endif()
 
-    if(EXISTS "${_ethosu_imx_driver_cpp}")
-      target_include_directories(
-        executorch_delegate_ethos_u
-        PRIVATE ${ETHOSU_IMX_DRIVER_SOURCE_DIR}/driver_library/include
-                ${ETHOSU_IMX_DRIVER_SOURCE_DIR}/kernel_driver/include
-      )
-      target_sources(
-        executorch_delegate_ethos_u PRIVATE ${_ethosu_imx_driver_cpp}
-      )
-      set(_ethosu_imx_source "${_ethosu_imx_driver_cpp}")
-      set(_ethosu_imx_compile_options -Wno-error -include cstdint)
-    elseif(EXISTS "${_ethosu_imx_flat_cpp}")
-      target_include_directories(
-        executorch_delegate_ethos_u
-        PRIVATE ${ETHOSU_IMX_DRIVER_SOURCE_DIR}
-                ${ETHOSU_IMX_DRIVER_SOURCE_DIR}/uapi
-      )
-      target_sources(
-        executorch_delegate_ethos_u PRIVATE ${_ethosu_imx_flat_cpp}
-      )
-      set(_ethosu_imx_source "${_ethosu_imx_flat_cpp}")
-      set(_ethosu_imx_compile_options -Wno-error)
-    else()
+    if(NOT EXISTS "${_ethosu_imx_driver_cpp}")
       message(
         FATAL_ERROR
-          "ETHOSU_IMX_DRIVER_SOURCE_DIR does not contain a supported driver layout."
+          "ETHOSU_IMX_DRIVER_SOURCE_DIR must contain driver_library/src/ethosu.cpp."
       )
     endif()
 
+    target_include_directories(
+      executorch_delegate_ethos_u
+      PRIVATE ${ETHOSU_IMX_DRIVER_SOURCE_DIR}/driver_library/include
+              ${ETHOSU_IMX_DRIVER_SOURCE_DIR}/kernel_driver/include
+    )
+    target_sources(
+      executorch_delegate_ethos_u PRIVATE ${_ethosu_imx_driver_cpp}
+    )
     set_source_files_properties(
-      ${_ethosu_imx_source}
-      PROPERTIES COMPILE_OPTIONS "${_ethosu_imx_compile_options}"
+      ${_ethosu_imx_driver_cpp}
+      PROPERTIES COMPILE_OPTIONS "-Wno-error;-include;cstdint"
     )
   endif()
 

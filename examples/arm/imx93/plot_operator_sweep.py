@@ -7,8 +7,8 @@ import argparse
 import json
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
 import pandas as pd
 
 
@@ -39,7 +39,7 @@ def _plot_metric(
     fig, ax = plt.subplots(figsize=(7.6, 4.8), constrained_layout=True)
     groups = list(df.groupby("op"))
     colors = plt.get_cmap("tab10")(range(max(len(groups), 1)))
-    for color, (op_name, group) in zip(colors, groups):
+    for color, (op_name, group) in zip(colors, groups, strict=True):
         ordered = group.sort_values("input_elements")
         ax.plot(
             ordered["input_elements"],
@@ -63,11 +63,6 @@ def _plot_metric(
 
 def _plot_status_matrix(df: pd.DataFrame, path: Path) -> None:
     order = sorted(df["op"].unique())
-    status_order = (
-        "ok",
-        "run_failed",
-        "export_failed",
-    )
     status_to_value = {
         "ok": 2,
         "run_failed": 1,
@@ -78,8 +73,11 @@ def _plot_status_matrix(df: pd.DataFrame, path: Path) -> None:
         .pivot(index="op", columns="size", values="value")
         .reindex(order)
         .sort_index(axis=1)
+        .fillna(-1)
     )
-    fig, ax = plt.subplots(figsize=(7.6, 0.55 * len(order) + 1.4), constrained_layout=True)
+    fig, ax = plt.subplots(
+        figsize=(7.6, 0.55 * len(order) + 1.4), constrained_layout=True
+    )
     cmap = mcolors.ListedColormap(["#b2182b", "#ef8a62", "#67a9cf", "#2166ac"])
     norm = mcolors.BoundaryNorm([-1.5, -0.5, 0.5, 1.5, 2.5], cmap.N)
     image = ax.imshow(
@@ -90,7 +88,9 @@ def _plot_status_matrix(df: pd.DataFrame, path: Path) -> None:
         interpolation="nearest",
     )
     ax.set_yticks(range(len(pivot.index)), labels=pivot.index)
-    ax.set_xticks(range(len(pivot.columns)), labels=[str(size) for size in pivot.columns])
+    ax.set_xticks(
+        range(len(pivot.columns)), labels=[str(size) for size in pivot.columns]
+    )
     ax.set_xlabel("Operator size parameter")
     ax.set_ylabel("Operator")
     colorbar = fig.colorbar(image, ax=ax, shrink=0.9)

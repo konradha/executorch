@@ -1451,6 +1451,10 @@ if(EXECUTORCH_BUILD_EXECUTOR_RUNNER)
     list(APPEND _executor_runner_libs quantized_ops_lib)
   endif()
 
+  if(EXECUTORCH_BUILD_CORTEX_M)
+    list(APPEND _executor_runner_libs cortex_m_ops_lib)
+  endif()
+
   if(EXECUTORCH_BUILD_KERNELS_LLM)
     list(APPEND _executor_runner_libs $<LINK_LIBRARY:WHOLE_ARCHIVE,custom_ops>)
   endif()
@@ -1482,9 +1486,10 @@ if(EXECUTORCH_BUILD_EXECUTOR_RUNNER)
         executor_runner PRIVATE EXECUTORCH_BUILD_ARM_ETHOSU_IMX=1
       )
     endif()
-    target_link_libraries(
-      executor_runner
-      PRIVATE $<LINK_LIBRARY:WHOLE_ARCHIVE,executorch_delegate_ethos_u>
+    # Keep the static backend registration object from the aggregate target.
+    set_property(
+      TARGET executor_runner
+      PROPERTY LINK_LIBRARY_OVERRIDE_executorch_delegate_ethos_u WHOLE_ARCHIVE
     )
     target_link_options(
       executor_runner PRIVATE -static-libstdc++ -static-libgcc
